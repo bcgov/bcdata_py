@@ -3,7 +3,6 @@ import requests
 from .bc2pg import bc2pg as bc2pg
 from .bcdc import get_table_definition as get_table_definition
 from .bcdc import get_table_name as get_table_name
-from .wcs import get_dem as get_dem
 from .wfs import get_count as get_count
 from .wfs import get_data as get_data
 from .wfs import get_sortkey as get_sortkey

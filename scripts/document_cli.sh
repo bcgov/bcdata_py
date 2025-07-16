@@ -21,12 +21,6 @@ bcdata cat --help >> cli.md
 printf '```\n' >> cli.md
 
 printf '\n' >> cli.md
-printf '#### dem \n\n' >> cli.md
-printf '```\n$ bcdata dem --help\n\n' >> cli.md
-bcdata dem --help >> cli.md
-printf '```\n' >> cli.md
-
-printf '\n' >> cli.md
 printf '#### dump \n\n' >> cli.md
 printf '```\n$ bcdata dump --help\n\n' >> cli.md
 bcdata dump --help >> cli.md
