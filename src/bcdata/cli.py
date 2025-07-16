@@ -65,14 +65,6 @@ bounds_opt = click.option(
     help='Bounds: "left bottom right top" or "[left, bottom, right, top]". Coordinates are BC Albers (default) or --bounds_crs',
 )
 
-bounds_opt_dem = click.option(
-    "--bounds",
-    required=True,
-    default=None,
-    callback=bounds_handler,
-    help='Bounds: "left bottom right top" or "[left, bottom, right, top]". Coordinates are BC Albers (default) or --bounds_crs',
-)
-
 
 lowercase_opt = click.option(
     "--lowercase", "-l", is_flag=True, help="Write column/properties names as lowercase"
@@ -135,51 +127,6 @@ def info(dataset, indent, meta_member, verbose, quiet):
         click.echo(info[meta_member])
     else:
         click.echo(json.dumps(info, indent=indent))
-
-
-@cli.command()
-@click.option("--out_file", "-o", help="Output file", default="dem25.tif")
-@bounds_opt_dem
-@click.option(
-    "--bounds-crs",
-    help="CRS of provided bounds",
-    default="EPSG:3005",
-)
-@click.option("--resolution", "-r", type=int, default=25)
-@click.option(
-    "--align",
-    "-a",
-    is_flag=True,
-    help="Align provided bounds to provincial standard",
-)
-@click.option(
-    "--interpolation",
-    "-i",
-    type=click.Choice(["nearest", "bilinear", "bicubic"], case_sensitive=False),
-)
-@verbose_opt
-@quiet_opt
-def dem(
-    bounds,
-    bounds_crs,
-    align,
-    out_file,
-    resolution,
-    interpolation,
-    verbose,
-    quiet,
-):
-    """Dump BC DEM to TIFF"""
-    verbosity = verbose - quiet
-    configure_logging(verbosity)
-    bcdata.get_dem(
-        bounds,
-        out_file=out_file,
-        align=align,
-        src_crs=bounds_crs,
-        resolution=resolution,
-        interpolation=interpolation,
-    )
 
 
 @cli.command()

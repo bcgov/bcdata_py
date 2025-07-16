@@ -3,13 +3,13 @@
 [![Actions Status](https://github.com/smnorris/bcdata/actions/workflows/tests.yml/badge.svg)](https://github.com/smnorris/bcdata/actions?query=workflow%3Atests)
 [![pypi](https://img.shields.io/pypi/v/bcdata.svg)](https://pypi.python.org/pypi/bcdata/)
 
-Python and command line tools for quick access to DataBC geo-data available via WFS/WCS.
+Python and command line tools for quick access to DataBC geo-data available via WFS.
 
 There is a [wealth of British Columbia geographic information available as open
 data](https://catalogue.data.gov.bc.ca/dataset?download_audience=Public),
 but most sources are available only via WFS - and the syntax to download WFS data via `ogr2ogr` and/or `curl/wget` can be awkward.
 
-This tool attempts to simplify downloads of BC geographic data and smoothly integrate with PostGIS and Python GIS tools like `geopandas`, `fiona` and `rasterio`. The tool only accesses geographic data [avialable via WFS/WCS](https://bcgov.github.io/data-publication/pages/tips_tricks_webservices.html) - for other BC open data, download the files directly with `requests` / `curl` / `ogr2ogr` / etc (or the [bcdata R package](https://github.com/bcgov/bcdata)).
+This tool attempts to simplify downloads of BC geographic data and smoothly integrate with PostGIS and Python GIS tools like `geopandas`, `fiona` and `rasterio`. The tool only accesses geographic data [avialable via WFS](https://bcgov.github.io/data-publication/pages/tips_tricks_webservices.html) - for other BC open data, download the files directly with `requests` / `curl` / `ogr2ogr` / etc (or the [bcdata R package](https://github.com/bcgov/bcdata)).
 
 If downloads are failing, consult the [BCGov Data Systems and Services uptime monitor](https://uptime.com/statuspage/bcgov-dss) - this tool depends on BC Open Geospatial Web Services API at [openmaps.gov.bc.ca](https://openmaps.gov.bc.ca/geo/pub/ows?service=WFS&request=Getcapabilities) and the [BC Data Catalogue API](https://catalogue.data.gov.bc.ca/dataset/bc-data-catalogue-api). 
 
@@ -98,7 +98,6 @@ Options:
 Commands:
   bc2pg  Load a DataBC WFS layer to a postgres db
   cat    Write DataBC features to stdout as GeoJSON feature objects.
-  dem    Dump BC DEM to TIFF
   dump   Write DataBC features to stdout as GeoJSON feature collection.
   info   Print basic metadata about a DataBC WFS layer as JSON.
   list   List DataBC layers available via WFS
@@ -161,29 +160,6 @@ Options:
   -s, --sortby TEXT               Name of sort field
   -l, --lowercase                 Write column/properties names as lowercase
   -m, --promote-to-multi          Promote features to multipart
-  -v, --verbose                   Increase verbosity.
-  -q, --quiet                     Decrease verbosity.
-  --help                          Show this message and exit.
-```
-
-#### dem 
-
-```
-$ bcdata dem --help
-
-Usage: bcdata dem [OPTIONS]
-
-  Dump BC DEM to TIFF
-
-Options:
-  -o, --out_file TEXT             Output file
-  --bounds TEXT                   Bounds: "left bottom right top" or "[left,
-                                  bottom, right, top]". Coordinates are BC
-                                  Albers (default) or --bounds_crs  [required]
-  --bounds-crs TEXT               CRS of provided bounds
-  -r, --resolution INTEGER
-  -a, --align                     Align provided bounds to provincial standard
-  -i, --interpolation [nearest|bilinear|bicubic]
   -v, --verbose                   Increase verbosity.
   -q, --quiet                     Decrease verbosity.
   --help                          Show this message and exit.
