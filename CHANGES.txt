@@ -1,9 +1,11 @@
 Changes
 =======
 
-0.16.0 ()
+0.16.0 (2025-07-)
 ------------------
+- transfer ownership to bcgov org and update repository name to bcdata_py to avoid conflict with R package (#212)
 - change license from MIT to Apache, copyright Province of BC (#213)
+- remove WCS support (#216)
 
 0.15.0 (2024-12-20)
 ------------------
