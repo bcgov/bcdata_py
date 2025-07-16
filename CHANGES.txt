@@ -1,6 +1,10 @@
 Changes
 =======
 
+0.16.0post1 (2025-07-16)
+------------------
+- update license classifier
+
 0.16.0 (2025-07-16)
 ------------------
 - transfer ownership to bcgov org and update repository name to bcdata_py to avoid conflict with R package (#212)
