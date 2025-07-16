@@ -333,7 +333,7 @@ Use some other tool to reproject the data as required.
 
 Create virtualenv and install `bcdata` in development mode:
 
-    $ git clone git@github.com:smnorris/bcdata_py.git
+    $ git clone git@github.com:bcgov/bcdata_py.git
     $ cd bcdata_py
     $ python -m venv .venv
     $ source .venv/bin/activate
