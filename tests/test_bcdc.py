@@ -57,10 +57,10 @@ def test_get_table_definition_format_multi_nopreview():
 
 def test_get_table_definition_format_multi_nolayer():
     table_definition = bcdc.get_table_definition(
-        "WHSE_HUMAN_CULTURAL_ECONOMIC.HIST_HISTORIC_ENVIRONMENTS_SP"
+        "WHSE_HUMAN_CULTURAL_ECONOMIC.HIST_HISTORIC_ENVIRONMNT_PA_SV"
     )
     assert table_definition["description"]
-    assert table_definition["comments"]
+    # assert table_definition["comments"] there are no comments associated with this dataset
     assert table_definition["schema"]
 
 
