@@ -1,4 +1,4 @@
-# bcdata
+# bcdata 
 
 [![Actions Status](https://github.com/smnorris/bcdata/actions/workflows/tests.yml/badge.svg)](https://github.com/smnorris/bcdata/actions?query=workflow%3Atests)
 [![pypi](https://img.shields.io/pypi/v/bcdata.svg)](https://pypi.python.org/pypi/bcdata/)
@@ -333,8 +333,8 @@ Use some other tool to reproject the data as required.
 
 Create virtualenv and install `bcdata` in development mode:
 
-    $ git clone git@github.com:smnorris/bcdata.git
-    $ cd bcdata
+    $ git clone git@github.com:smnorris/bcdata_py.git
+    $ cd bcdata_py
     $ python -m venv .venv
     $ source .venv/bin/activate
     (.venv)$ pip install -e .[test]
