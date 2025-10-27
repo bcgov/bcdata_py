@@ -29,11 +29,11 @@ def complete_dataset_names(ctx, param, incomplete):
 
 def from_like_context(ctx, param, value):
     """Return the value for an option from the context if the option
-    or `--all` is given, else return None."""
+    or `--all` is given, else return None.
+    """
     if ctx.obj and ctx.obj.get("like") and (value == "like" or ctx.obj.get("all_like")):
         return ctx.obj["like"][param.name]
-    else:
-        return None
+    return None
 
 
 def bounds_handler(ctx, param, value):
@@ -47,7 +47,7 @@ def bounds_handler(ctx, param, value):
             return retval
         except Exception:
             raise click.BadParameter(
-                "{0!r} is not a valid bounding box representation".format(value)
+                f"{value!r} is not a valid bounding box representation",
             )
     else:  # pragma: no cover
         return retval
@@ -67,7 +67,7 @@ bounds_opt = click.option(
 
 
 lowercase_opt = click.option(
-    "--lowercase", "-l", is_flag=True, help="Write column/properties names as lowercase"
+    "--lowercase", "-l", is_flag=True, help="Write column/properties names as lowercase",
 )
 
 
@@ -161,7 +161,7 @@ def info(dataset, indent, meta_member, verbose, quiet):
 @verbose_opt
 @quiet_opt
 def dump(
-    dataset, query, count, bounds, bounds_crs, sortby, lowercase, promote_to_multi, verbose, quiet
+    dataset, query, count, bounds, bounds_crs, sortby, lowercase, promote_to_multi, verbose, quiet,
 ):
     """Write DataBC features to stdout as GeoJSON feature collection.
 
@@ -364,7 +364,7 @@ def bc2pg(
         raise ValueError("Options append and refresh are not compatible")
     if refresh and (schema == "bcdata"):
         raise ValueError("Refreshing tables in bcdata schema is not supported, use another schema")
-    elif refresh and schema:
+    if refresh and schema:
         schema_target = schema
     elif refresh and not schema:
         schema_target, table = bcdata.validate_name(dataset).lower().split(".")
@@ -404,4 +404,4 @@ def bc2pg(
 
     # do not notify of data load completion when no data load has occured
     if not schema_only:
-        log.info("Load of {} to {} in {} complete".format(dataset, out_table, db_url))
+        log.info(f"Load of {dataset} to {out_table} in {db_url} complete")

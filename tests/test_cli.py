@@ -24,7 +24,7 @@ def test_info_table():
     runner = CliRunner()
     result = runner.invoke(cli, ["info", AIRPORTS_TABLE])
     assert result.exit_code == 0
-    assert 'name": "{}"'.format(AIRPORTS_TABLE) in result.output
+    assert f'name": "{AIRPORTS_TABLE}"' in result.output
     assert '"count": 455' in result.output
 
 
@@ -32,7 +32,7 @@ def test_info_package():
     runner = CliRunner()
     result = runner.invoke(cli, ["info", AIRPORTS_PACKAGE])
     assert result.exit_code == 0
-    assert 'name": "{}"'.format(AIRPORTS_TABLE) in result.output
+    assert f'name": "{AIRPORTS_TABLE}"' in result.output
     assert '"count": 455' in result.output
 
 

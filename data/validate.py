@@ -6,7 +6,7 @@ import bcdata
 
 LOG_FORMAT = "%(asctime)s:%(levelname)s:%(name)s: %(message)s"
 
-with open("primary_keys.json", "r") as file:
+with open("primary_keys.json") as file:
     """validate pk database"""
     logging.basicConfig(stream=sys.stderr, level=20, format=LOG_FORMAT)
     log = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ with open("primary_keys.json", "r") as file:
             if column not in [c["column_name"].lower() for c in schema]:
                 raise ValueError(f"Column {column} not found in {table}")
         log.info(
-            "Validation successful - columns listed in primary_keys.json are present in listed tables"
+            "Validation successful - columns listed in primary_keys.json are present in listed tables",
         )
     else:
         invalid_keys = list(pk_db_tables - bcdata_tables)

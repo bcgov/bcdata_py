@@ -36,7 +36,7 @@ def test_get_table_definition():
 
 def test_get_table_definition_format_multi():
     table_definition = bcdc.get_table_definition(
-        "WHSE_FOREST_VEGETATION.OGSR_PRIORITY_DEF_AREA_CUR_SP"
+        "WHSE_FOREST_VEGETATION.OGSR_PRIORITY_DEF_AREA_CUR_SP",
     )
     assert table_definition["description"]
     assert table_definition["comments"]
@@ -57,7 +57,7 @@ def test_get_table_definition_format_multi_nopreview():
 
 def test_get_table_definition_format_multi_nolayer():
     table_definition = bcdc.get_table_definition(
-        "WHSE_HUMAN_CULTURAL_ECONOMIC.HIST_HISTORIC_ENVIRONMNT_PA_SV"
+        "WHSE_HUMAN_CULTURAL_ECONOMIC.HIST_HISTORIC_ENVIRONMNT_PA_SV",
     )
     assert table_definition["description"]
     # assert table_definition["comments"] there are no comments associated with this dataset
@@ -66,7 +66,7 @@ def test_get_table_definition_format_multi_nolayer():
 
 def test_get_table_definition_format_oracle_sde():
     table_definition = bcdc.get_table_definition(
-        "WHSE_LAND_USE_PLANNING.RMP_LANDSCAPE_RSRV_DESIGN_SP"
+        "WHSE_LAND_USE_PLANNING.RMP_LANDSCAPE_RSRV_DESIGN_SP",
     )
     assert table_definition["description"]
     assert table_definition["comments"]

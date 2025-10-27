@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import DATE, NUMERIC, VARCHAR
 log = logging.getLogger(__name__)
 
 
-class Database(object):
+class Database:
     """Wrapper around sqlalchemy"""
 
     def __init__(self, url=os.environ.get("DATABASE_URL")):
@@ -103,13 +103,13 @@ class Database(object):
             )
             self.execute(dbq)
             columns = list(
-                set(self.get_columns("bcdata", table)).intersection(self.get_columns(schema, table))
+                set(self.get_columns("bcdata", table)).intersection(self.get_columns(schema, table)),
             )
             identifiers = [sql.Identifier(c) for c in columns]
             dbq = sql.SQL(
                 """INSERT INTO {schema}.{table}
                 ({columns})
-                SELECT {columns} FROM bcdata.{table}"""
+                SELECT {columns} FROM bcdata.{table}""",
             ).format(
                 schema=sql.Identifier(schema),
                 table=sql.Identifier(table),
@@ -130,7 +130,7 @@ class Database(object):
         table_comments=None,
         primary_key=None,
     ):
-        """build sqlalchemy table definition from bcdc provided json definitions"""
+        """Build sqlalchemy table definition from bcdc provided json definitions"""
         # remove columns of unsupported types, redundant columns
         table_details = [c for c in table_details if c["data_type"] in self.supported_types.keys()]
         table_details = [
@@ -159,7 +159,7 @@ class Database(object):
                         column_type,
                         primary_key=True,
                         comment=column_comments,
-                    )
+                    ),
                 )
             else:
                 columns.append(
@@ -167,7 +167,7 @@ class Database(object):
                         column_name,
                         column_type,
                         comment=column_comments,
-                    )
+                    ),
                 )
 
         # make everything multipart
@@ -212,7 +212,7 @@ class Database(object):
                  table_name text PRIMARY KEY,
                  latest_download timestamp WITH TIME ZONE
                );
-            """
+            """,
         )
         self.execute(
             """INSERT INTO bcdata.log (table_name, latest_download)

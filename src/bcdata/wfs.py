@@ -51,7 +51,7 @@ class ServiceException(Exception):
     pass
 
 
-class BCWFS(object):
+class BCWFS:
     """Wrapper around web feature service"""
 
     def __init__(self, refresh=False):
@@ -71,7 +71,7 @@ class BCWFS(object):
             # if the file is named something else, prompt user to delete it
             else:
                 raise RuntimeError(
-                    f"Cache file exists, delete before using bcdata: {self.cache_path}"
+                    f"Cache file exists, delete before using bcdata: {self.cache_path}",
                 )
         # create cache folder if it does not exist
         p.mkdir(parents=True, exist_ok=True)
@@ -80,10 +80,10 @@ class BCWFS(object):
         self.capabilities = self.get_capabilities()
         # get pagesize from xml using the xpath from https://github.com/bcgov/bcdata/
         countdefault = ET.fromstring(self.capabilities).findall(
-            ".//{http://www.opengis.net/ows/1.1}Constraint[@name='CountDefault']"
+            ".//{http://www.opengis.net/ows/1.1}Constraint[@name='CountDefault']",
         )[0]
         self.pagesize = int(
-            countdefault.find("ows:DefaultValue", {"ows": "http://www.opengis.net/ows/1.1"}).text
+            countdefault.find("ows:DefaultValue", {"ows": "http://www.opengis.net/ows/1.1"}).text,
         )
 
         self.request_headers = {"User-Agent": "bcdata.py ({bcdata.__version__})"}
@@ -93,16 +93,14 @@ class BCWFS(object):
         cache_file = os.path.join(self.cache_path, cache_file)
         if not os.path.exists(os.path.join(cache_file)):
             return True
-        else:
-            mod_date = datetime.fromtimestamp(os.path.getmtime(cache_file))
-            # if file older than specified days or empty, return true
-            if (
-                mod_date < (datetime.now() - timedelta(days=self.cache_refresh_days))
-                or os.stat(cache_file).st_size == 0
-            ):
-                return True
-            else:
-                return False
+        mod_date = datetime.fromtimestamp(os.path.getmtime(cache_file))
+        # if file older than specified days or empty, return true
+        if (
+            mod_date < (datetime.now() - timedelta(days=self.cache_refresh_days))
+            or os.stat(cache_file).st_size == 0
+        ):
+            return True
+        return False
 
     @stamina.retry(on=requests.HTTPError, timeout=60)
     def _request_schema(self, table):
@@ -146,7 +144,7 @@ class BCWFS(object):
             log.error(f"Response headers: {r.headers}")
             log.error(f"Response text: {r.text}")
             raise ServiceException(r.text)  # presumed request error
-        elif r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
+        if r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
             log.warning(f"HTTP error: {r.status_code}, retrying")
             log.warning(f"Response headers: {r.headers}")
             log.warning(f"Response text: {r.text}")
@@ -166,7 +164,7 @@ class BCWFS(object):
             log.error(f"Response headers: {r.headers}")
             log.error(f"Response text: {r.text}")
             raise ServiceException(r.text)  # presumed request error
-        elif r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
+        if r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
             log.warning(f"HTTP error: {r.status_code}")
             log.warning(f"Response headers: {r.headers}")
             log.warning(f"Response text: {r.text}")
@@ -186,7 +184,7 @@ class BCWFS(object):
             log.error(f"Response headers: {r.headers}")
             log.error(f"Response text: {r.text}")
             raise ServiceException(r.text)  # presumed request error
-        elif r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
+        if r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
             log.warning(f"HTTP error: {r.status_code}")
             log.warning(f"Response headers: {r.headers}")
             log.warning(f"Response text: {r.text}")
@@ -214,8 +212,7 @@ class BCWFS(object):
         return cql_filter
 
     def get_capabilities(self):
-        """
-        Request server capabilities (layer definitions).
+        """Request server capabilities (layer definitions).
         Cache response as file daily, caching to one of:
           - $BCDATA_CACHE environment variable
           - default (~/.bcdata)
@@ -225,7 +222,7 @@ class BCWFS(object):
             with open(os.path.join(self.cache_path, "capabilities.xml"), "w") as f:
                 f.write(self._request_capabilities())
         # load cached xml from file
-        with open(os.path.join(self.cache_path, "capabilities.xml"), "r") as f:
+        with open(os.path.join(self.cache_path, "capabilities.xml")) as f:
             return f.read()
 
     def get_count(self, dataset, query=None, bounds=None, bounds_crs="EPSG:3005", geom_column=None):
@@ -248,7 +245,7 @@ class BCWFS(object):
                 schema = self._request_schema(table)
                 f.write(json.dumps(schema, indent=4))
         # load cached schema
-        with open(os.path.join(self.cache_path, table), "r") as f:
+        with open(os.path.join(self.cache_path, table)) as f:
             return json.loads(f.read())
 
     def get_sortkey(self, table):
@@ -258,25 +255,24 @@ class BCWFS(object):
         if table.lower() in bcdata.primary_keys:
             return bcdata.primary_keys[table.lower()].upper()
         # if pk not known, use OBJECTID as default sort key when present
-        elif "OBJECTID" in columns:
+        if "OBJECTID" in columns:
             return "OBJECTID"
         # if OBJECTID is not present (several GSR tables), use SEQUENCE_ID
-        elif "SEQUENCE_ID" in columns:
+        if "SEQUENCE_ID" in columns:
             return "SEQUENCE_ID"
         # otherwise, presume first column is best value to sort by
         # (in some cases this will be incorrect)
-        else:
-            log.warning(
-                f"Reliable sort key for {table} cannot be determined, defaulting to first column {columns[0]}"
-            )
-            return columns[0]
+        log.warning(
+            f"Reliable sort key for {table} cannot be determined, defaulting to first column {columns[0]}",
+        )
+        return columns[0]
 
     def list_tables(self):
-        """read and parse capabilities xml, which lists all tables available"""
+        """Read and parse capabilities xml, which lists all tables available"""
         return [
             i.strip("pub:")
             for i in list(
-                WebFeatureService(self.ows_url, version="2.0.0", xml=self.capabilities).contents
+                WebFeatureService(self.ows_url, version="2.0.0", xml=self.capabilities).contents,
             )
         ]
 
@@ -284,8 +280,7 @@ class BCWFS(object):
         """Check wfs/cache and the bcdc api to see if dataset name is valid"""
         if dataset.upper() in self.list_tables():
             return dataset.upper()
-        else:
-            return bcdata.get_table_name(dataset.upper())
+        return bcdata.get_table_name(dataset.upper())
 
     def define_requests(
         self,
@@ -304,6 +299,7 @@ class BCWFS(object):
         - http://www.opengeospatial.org/standards/wfs
         - http://docs.geoserver.org/stable/en/user/services/wfs/vendor.html
         - http://docs.geoserver.org/latest/en/user/tutorials/cql/cql_tutorial.html
+
         """
         # validate the table name
         table = self.validate_name(dataset)
@@ -315,9 +311,9 @@ class BCWFS(object):
         # find out how many records are in the table
         if not count and check_count is False:
             raise ValueError(
-                "{count: Null, check_count=False} is invalid, either provide record count or let bcdata request it"
+                "{count: Null, check_count=False} is invalid, either provide record count or let bcdata request it",
             )
-        elif (
+        if (
             not count and check_count is True
         ):  # if not provided a count, get one if not told otherwise
             count = self.get_count(
@@ -337,8 +333,7 @@ class BCWFS(object):
                 bounds_crs=bounds_crs,
                 geom_column=geom_column,
             )
-            if count > n:
-                count = n
+            count = min(count, n)
 
         log.info(f"Total features requested: {count}")
 
@@ -406,8 +401,7 @@ class BCWFS(object):
 
         if as_gdf:
             return gdf
-        else:
-            return json.loads(gdf.to_json())
+        return json.loads(gdf.to_json())
 
 
 def get_data(
@@ -436,8 +430,8 @@ def get_data(
     for url in urls:
         results.append(
             WFS.request_features(
-                url, as_gdf=True, lowercase=lowercase, promote_to_multi=promote_to_multi
-            )
+                url, as_gdf=True, lowercase=lowercase, promote_to_multi=promote_to_multi,
+            ),
         )
     if len(results) > 1:
         gdf = pd.concat(results)
@@ -447,8 +441,7 @@ def get_data(
         gdf = gpd.GeoDataFrame()
     if as_gdf:
         return gdf
-    else:
-        return json.loads(gdf.to_json())
+    return json.loads(gdf.to_json())
 
 
 def get_count(dataset, query=None, bounds=None, bounds_crs="EPSG:3005"):

@@ -62,15 +62,14 @@ def get_table_name(package):
     if len(layer_names) > 1:
         raise ValueError(
             "Package {} includes more than one WFS resource, specify one of the following: \n{}".format(
-                package, "\n".join(layer_names)
-            )
+                package, "\n".join(layer_names),
+            ),
         )
     return layer_names[0]
 
 
 def get_table_definition(table_name):
-    """
-    Given a table/object name, search BCDC for the first package/resource with a matching "object_name",
+    """Given a table/object name, search BCDC for the first package/resource with a matching "object_name",
     returns dict: {"comments": <>, "notes": <>, "schema": {<schema dict>} }
     """
     # only allow searching for tables present in WFS list

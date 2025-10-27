@@ -74,7 +74,7 @@ def bc2pg(  # noqa: C901
 
     # define requests
     urls = WFS.define_requests(
-        dataset, query=query, bounds=bounds, bounds_crs=bounds_crs, count=count, sortby=sortby
+        dataset, query=query, bounds=bounds, bounds_crs=bounds_crs, count=count, sortby=sortby,
     )
 
     df = None  # just for tracking if first download is done by geometry type check
@@ -112,7 +112,7 @@ def bc2pg(  # noqa: C901
                 )
                 geometry_type = df_temp.geom_type.unique()[0]  # keep only the first type
                 if numpy.any(
-                    df_temp.has_z.unique()[0]
+                    df_temp.has_z.unique()[0],
                 ):  # geopandas does not include Z in geom_type string
                     geometry_type = geometry_type + "Z"
                 # drop the last request dataframe to free up memory
@@ -132,7 +132,7 @@ def bc2pg(  # noqa: C901
             c["column_name"].upper() for c in table_definition["schema"]
         ]:
             raise ValueError(
-                "Column {primary_key} specified as primary_key does not exist in source"
+                "Column {primary_key} specified as primary_key does not exist in source",
             )
 
         # build the table definition and create table

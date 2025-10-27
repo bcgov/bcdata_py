@@ -23,7 +23,7 @@ def test_bc2pg():
     r = DB_CONNECTION.query(
         """
         SELECT ST_geometrytype(geom) from whse_imagery_and_base_maps.gsr_airports_svw limit 1
-        """
+        """,
     )
     assert r[0][0] == "ST_MultiPoint"
     DB_CONNECTION.execute("drop table " + AIRPORTS_TABLE)
@@ -76,7 +76,7 @@ def test_bc2pg_geometry_type():
     r = DB_CONNECTION.query(
         """
         SELECT ST_geometrytype(geom) from whse_imagery_and_base_maps.gsr_airports_svw limit 1
-        """
+        """,
     )
     assert r[0][0] == "ST_Point"
     DB_CONNECTION.execute("drop table " + AIRPORTS_TABLE)
@@ -103,7 +103,7 @@ def test_bc2pg_z():
     r = DB_CONNECTION.query(
         """
         SELECT ST_NDims(geom) from whse_basemapping.fwa_stream_networks_sp limit 1
-        """
+        """,
     )
     assert r[0][0] == 3
     DB_CONNECTION.execute("drop table " + STREAMS_TABLE)
@@ -121,7 +121,7 @@ def test_bc2pg_primary_key():
         WHERE relname = 'pscis_assessment_svw'
         AND nspname = 'whse_fish'
         AND indisprimary
-        """
+        """,
     )
     assert r[0][0] == "stream_crossing_id"
     DB_CONNECTION.execute("drop table " + ASSESSMENTS_TABLE)
@@ -143,7 +143,7 @@ def test_bc2pg_primary_key_default():
         WHERE relname = 'pscis_assessment_svw'
         AND nspname = 'whse_fish'
         AND indisprimary
-        """
+        """,
     )
     assert r[0][0] == "stream_crossing_id"
     DB_CONNECTION.execute("drop table " + ASSESSMENTS_TABLE)
