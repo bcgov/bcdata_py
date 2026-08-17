@@ -24,11 +24,12 @@ classifiers = [
     "Operating System :: OS Independent"
 ]
 dependencies = [
+    "click",
+    "cligj",
     "geoalchemy2",
     "geopandas",
     "owslib",
     "psycopg2-binary",
-    "rasterio",
     "requests",
     "sqlalchemy",
     "stamina"
