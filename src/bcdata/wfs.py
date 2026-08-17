@@ -443,8 +443,10 @@ def get_data(
         gdf = pd.concat(results)
     elif len(results) == 1:
         gdf = results[0]
+    # generally all datasets should have records, but handle the case of zero results
+    # by creating an empty geodataframe
     else:
-        gdf = gpd.GeoDataFrame()
+        gdf = gpd.GeoDataFrame(geometry=[])
     if as_gdf:
         return gdf
     else:

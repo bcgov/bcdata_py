@@ -81,6 +81,11 @@ def test_get_null_gdf():
     assert type(gdf) is GeoDataFrame
 
 
+def test_get_null_geojson():
+    data = bcdata.get_data(UTMZONES_KEY, query="UTM_ZONE=9999")
+    assert data == {"type": "FeatureCollection", "features": []}
+
+
 def test_get_data_small():
     data = bcdata.get_data(AIRPORTS_TABLE)
     assert data["type"] == "FeatureCollection"
