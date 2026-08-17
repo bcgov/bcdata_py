@@ -35,6 +35,61 @@ def test_http_error_404():
             bcdata.get_data(AIRPORTS_TABLE)
 
 
+def _http_error(status_code):
+    response = requests.Response()
+    response.status_code = status_code
+    return requests.HTTPError(response=response)
+
+
+def test_is_retryable_5xx_and_429():
+    """5xx (presumed transient service errors) and 429 (rate limited) are retried"""
+    for code in (429, 500, 502, 503, 504):
+        assert bcdata.wfs._is_retryable(_http_error(code)) is True
+
+
+def test_is_retryable_4xx_not_retried():
+    """4xx client errors (other than 429) are not retried"""
+    for code in (400, 401, 404):
+        assert bcdata.wfs._is_retryable(_http_error(code)) is False
+
+
+def test_is_retryable_connection_and_timeout_errors():
+    """Connection/timeout failures are also worth retrying, not just bad HTTP responses"""
+    assert bcdata.wfs._is_retryable(requests.ConnectionError()) is True
+    assert bcdata.wfs._is_retryable(requests.Timeout()) is True
+
+
+def test_is_retryable_429_without_headers_uses_default_backoff():
+    assert bcdata.wfs._is_retryable(_http_error(429)) is True
+
+
+def test_is_retryable_429_honours_retry_after_header():
+    response = requests.Response()
+    response.status_code = 429
+    response.headers["Retry-After"] = "12"
+    backoff = bcdata.wfs._is_retryable(requests.HTTPError(response=response))
+    assert backoff == 12.0
+
+
+def test_is_retryable_429_honours_ratelimit_reset_header():
+    """DataBC's Kong gateway sends RateLimit-Reset rather than Retry-After"""
+    response = requests.Response()
+    response.status_code = 429
+    response.headers["RateLimit-Reset"] = "5"
+    backoff = bcdata.wfs._is_retryable(requests.HTTPError(response=response))
+    assert backoff == 5.0
+
+
+def test_rate_limit_backoff_unparseable_header_falls_back_to_none():
+    response = requests.Response()
+    response.headers["Retry-After"] = "Wed, 21 Oct 2026 07:28:00 GMT"
+    assert bcdata.wfs._rate_limit_backoff(response) is None
+
+
+def test_is_retryable_other_exceptions_not_retried():
+    assert bcdata.wfs._is_retryable(ValueError("nope")) is False
+
+
 def test_validate_table_lowercase():
     table = bcdata.validate_name(AIRPORTS_TABLE.lower())
     assert table == AIRPORTS_TABLE

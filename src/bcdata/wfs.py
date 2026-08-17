@@ -51,6 +51,50 @@ class ServiceException(Exception):
     pass
 
 
+# status codes worth retrying - 5xx are presumed transient service errors,
+# 429 is DataBC's WFS telling us we're rate limited
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+def _rate_limit_backoff(response):
+    """Return the server-specified backoff (seconds) for a 429 response, if given.
+
+    Checks the standard Retry-After header as well as RateLimit-Reset, which
+    is what DataBC's Kong gateway sends. Returns None if neither is present
+    or parseable, in which case the caller should fall back to the default
+    exponential backoff.
+    """
+    for header in ("Retry-After", "RateLimit-Reset"):
+        value = response.headers.get(header)
+        if value is not None:
+            try:
+                return float(value)
+            except ValueError:
+                continue
+    return None
+
+
+def _is_retryable(exc):
+    """Decide whether a request exception is worth retrying.
+
+    Used as the ``on=`` hook for @stamina.retry - see
+    https://stamina.hynek.me/en/stable/tutorial.html
+
+    Returning a float instead of True overrides the default backoff, which
+    is used to honour a 429 response's server-specified retry delay.
+    """
+    if isinstance(exc, requests.HTTPError):
+        response = exc.response
+        if response is None or response.status_code not in RETRYABLE_STATUS_CODES:
+            return False
+        if response.status_code == 429:
+            backoff = _rate_limit_backoff(response)
+            if backoff is not None:
+                return backoff
+        return True
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout))
+
+
 class BCWFS:
     """Wrapper around web feature service"""
 
@@ -101,7 +145,9 @@ class BCWFS:
                 or os.stat(cache_file).st_size == 0
             )
 
-    @stamina.retry(on=requests.HTTPError, timeout=60)
+    @stamina.retry(
+        on=(requests.HTTPError, requests.ConnectionError, requests.Timeout), attempts=5, timeout=300
+    )
     def _request_schema(self, table):
         schema = wfs_schema.get_schema(
             "https://openmaps.gov.bc.ca/geo/pub/ows",
@@ -110,7 +156,9 @@ class BCWFS:
         )
         return schema
 
-    @stamina.retry(on=requests.HTTPError, timeout=60)
+    @stamina.retry(
+        on=(requests.HTTPError, requests.ConnectionError, requests.Timeout), attempts=5, timeout=300
+    )
     def _request_capabilities(self):
         capabilities = ET.tostring(
             wfs200.WebFeatureService_2_0_0(self.ows_url, "2.0.0", None, False)._capabilities,
@@ -118,7 +166,39 @@ class BCWFS:
         )
         return capabilities
 
-    @stamina.retry(on=requests.HTTPError, timeout=60)
+    @stamina.retry(on=_is_retryable, attempts=5, timeout=300)
+    def _request(self, url, params=None, silent=False):
+        """Submit a request to DataBC WFS and return the raw response.
+
+        The WFS gateway itself can take up to ~60s to fail with a 504, so
+        the retry timeout above is sized to fit several such attempts
+        rather than being exhausted by a single one.
+        """
+        r = requests.get(url, params=params, headers=self.request_headers, timeout=(10, 65))
+        if not silent:
+            log.info(r.url)
+        else:
+            log.debug(r.url)
+        if r.status_code in [400, 401, 404]:
+            log.error(f"HTTP error {r.status_code}")
+            log.error(f"Response headers: {r.headers}")
+            log.error(f"Response text: {r.text}")
+            raise ServiceException(r.text)  # presumed request error
+        if r.status_code == 429:
+            backoff = _rate_limit_backoff(r)
+            if backoff is not None:
+                log.warning(
+                    f"Rate limited by DataBC WFS, backing off for {backoff}s before retrying"
+                )
+            else:
+                log.warning("Rate limited by DataBC WFS, retrying")
+        elif r.status_code in RETRYABLE_STATUS_CODES:
+            log.warning(f"HTTP error: {r.status_code}, retrying")
+            log.warning(f"Response headers: {r.headers}")
+            log.warning(f"Response text: {r.text}")
+        r.raise_for_status()
+        return r
+
     def _request_count(self, table, query=None, bounds=None, bounds_crs=None, geom_column=None):
         payload = {
             "service": "WFS",
@@ -135,60 +215,16 @@ class BCWFS:
                 bounds_crs=bounds_crs,
                 geom_column=geom_column,
             )
-
-        r = requests.get(self.wfs_url, params=payload, headers=self.request_headers)
-        log.debug(r.url)
-        if r.status_code in [400, 401, 404]:
-            log.error(f"HTTP error {r.status_code}")
-            log.error(f"Response headers: {r.headers}")
-            log.error(f"Response text: {r.text}")
-            raise ServiceException(r.text)  # presumed request error
-        elif r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
-            log.warning(f"HTTP error: {r.status_code}, retrying")
-            log.warning(f"Response headers: {r.headers}")
-            log.warning(f"Response text: {r.text}")
-            r.raise_for_status()
+        r = self._request(self.wfs_url, params=payload, silent=True)
         return int(ET.fromstring(r.text).attrib["numberMatched"])
 
-    @stamina.retry(on=requests.HTTPError, timeout=60)
     def _request_features(self, url, silent=False):
-        """Submit a getfeature request to DataBC WFS and return feature collection"""
-        r = requests.get(url, headers=self.request_headers)
-        if not silent:
-            log.info(r.url)
-        else:
-            log.debug(r.url)
-        if r.status_code in [400, 401, 404]:
-            log.error(f"HTTP error {r.status_code}")
-            log.error(f"Response headers: {r.headers}")
-            log.error(f"Response text: {r.text}")
-            raise ServiceException(r.text)  # presumed request error
-        elif r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
-            log.warning(f"HTTP error: {r.status_code}")
-            log.warning(f"Response headers: {r.headers}")
-            log.warning(f"Response text: {r.text}")
-            r.raise_for_status()
-        return r.json()["features"]
+        """Submit a getfeature request to DataBC WFS and return features"""
+        return self._request(url, silent=silent).json()["features"]
 
-    @stamina.retry(on=requests.HTTPError, timeout=60)
     def _request_featurecollection(self, url, silent=False):
         """Submit a getfeature request to DataBC WFS and return feature collection"""
-        r = requests.get(url, headers=self.request_headers)
-        if not silent:
-            log.info(r.url)
-        else:
-            log.debug(r.url)
-        if r.status_code in [400, 401, 404]:
-            log.error(f"HTTP error {r.status_code}")
-            log.error(f"Response headers: {r.headers}")
-            log.error(f"Response text: {r.text}")
-            raise ServiceException(r.text)  # presumed request error
-        elif r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
-            log.warning(f"HTTP error: {r.status_code}")
-            log.warning(f"Response headers: {r.headers}")
-            log.warning(f"Response text: {r.text}")
-            r.raise_for_status()
-        return r.json()
+        return self._request(url, silent=silent).json()
 
     def build_bounds_filter(self, query, bounds, bounds_crs, geom_column):
         """The bbox param shortcut is mutually exclusive with CQL_FILTER,
