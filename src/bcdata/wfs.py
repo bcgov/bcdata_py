@@ -56,14 +56,42 @@ class ServiceException(Exception):
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
+def _rate_limit_backoff(response):
+    """Return the server-specified backoff (seconds) for a 429 response, if given.
+
+    Checks the standard Retry-After header as well as RateLimit-Reset, which
+    is what DataBC's Kong gateway sends. Returns None if neither is present
+    or parseable, in which case the caller should fall back to the default
+    exponential backoff.
+    """
+    for header in ("Retry-After", "RateLimit-Reset"):
+        value = response.headers.get(header)
+        if value is not None:
+            try:
+                return float(value)
+            except ValueError:
+                continue
+    return None
+
+
 def _is_retryable(exc):
     """Decide whether a request exception is worth retrying.
 
     Used as the ``on=`` hook for @stamina.retry - see
     https://stamina.hynek.me/en/stable/tutorial.html
+
+    Returning a float instead of True overrides the default backoff, which
+    is used to honour a 429 response's server-specified retry delay.
     """
     if isinstance(exc, requests.HTTPError):
-        return exc.response is not None and exc.response.status_code in RETRYABLE_STATUS_CODES
+        response = exc.response
+        if response is None or response.status_code not in RETRYABLE_STATUS_CODES:
+            return False
+        if response.status_code == 429:
+            backoff = _rate_limit_backoff(response)
+            if backoff is not None:
+                return backoff
+        return True
     return isinstance(exc, (requests.ConnectionError, requests.Timeout))
 
 
@@ -156,7 +184,15 @@ class BCWFS:
             log.error(f"Response headers: {r.headers}")
             log.error(f"Response text: {r.text}")
             raise ServiceException(r.text)  # presumed request error
-        if r.status_code in RETRYABLE_STATUS_CODES:
+        if r.status_code == 429:
+            backoff = _rate_limit_backoff(r)
+            if backoff is not None:
+                log.warning(
+                    f"Rate limited by DataBC WFS, backing off for {backoff}s before retrying"
+                )
+            else:
+                log.warning("Rate limited by DataBC WFS, retrying")
+        elif r.status_code in RETRYABLE_STATUS_CODES:
             log.warning(f"HTTP error: {r.status_code}, retrying")
             log.warning(f"Response headers: {r.headers}")
             log.warning(f"Response text: {r.text}")
