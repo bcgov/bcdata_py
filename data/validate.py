@@ -12,7 +12,7 @@ with open("primary_keys.json", "r") as file:
     log = logging.getLogger(__name__)
     primary_keys = json.load(file)
     pk_db_tables = set(primary_keys.keys())
-    bcdata_tables = set([t.lower() for t in bcdata.list_tables()])
+    bcdata_tables = {t.lower() for t in bcdata.list_tables()}
     if pk_db_tables.issubset(bcdata_tables):
         log.info("Table names in primary_keys.json are valid")
         for table in primary_keys:

@@ -18,7 +18,7 @@ response = requests.get(PRIMARY_KEY_DB_URL)
 if response.status_code == 200:
     primary_keys = response.json()
 else:
-    raise Exception(f"Failed to download primary key database at {PRIMARY_KEY_DB_URL}")
+    raise ConnectionError(f"Failed to download primary key database at {PRIMARY_KEY_DB_URL}")
     primary_keys = {}
 
 __version__ = "0.16.0post1"

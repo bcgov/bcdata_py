@@ -9,12 +9,12 @@ from sqlalchemy.dialects.postgresql import DATE, NUMERIC, VARCHAR
 log = logging.getLogger(__name__)
 
 
-class Database(object):
+class Database:
     """Wrapper around sqlalchemy"""
 
-    def __init__(self, url=os.environ.get("DATABASE_URL")):
-        self.url = url
-        self.engine = create_engine(url)
+    def __init__(self, url=None):
+        self.url = url or os.environ.get("DATABASE_URL")
+        self.engine = create_engine(self.url)
         # make sure postgis is available
         try:
             self.query("SELECT postgis_full_version()")
@@ -132,7 +132,7 @@ class Database(object):
     ):
         """build sqlalchemy table definition from bcdc provided json definitions"""
         # remove columns of unsupported types, redundant columns
-        table_details = [c for c in table_details if c["data_type"] in self.supported_types.keys()]
+        table_details = [c for c in table_details if c["data_type"] in self.supported_types]
         table_details = [
             c
             for c in table_details
@@ -148,7 +148,7 @@ class Database(object):
             if table_details[i]["data_type"] == "VARCHAR2":
                 column_type = column_type(int(table_details[i]["data_precision"]))
             # check that comments are present
-            if "column_comments" in table_details[i].keys():
+            if "column_comments" in table_details[i]:
                 column_comments = table_details[i]["column_comments"]
             else:
                 column_comments = None
