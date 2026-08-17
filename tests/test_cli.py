@@ -3,6 +3,7 @@ import os
 
 from click.testing import CliRunner
 
+import bcdata
 from bcdata.cli import cli
 from bcdata.database import Database
 
@@ -16,24 +17,23 @@ BBOX_LL = "-123.396104,48.404465,-123.342588,48.425401"
 RIVERS_TABLE = "whse_basemapping.fwa_rivers_poly"
 ASSESSMENTS_TABLE = "whse_fish.pscis_assessment_svw"
 
-# Note that these tests depend on airport counts.
-# If airports are added to or removed from source layer, tests will fail
-
 
 def test_info_table():
     runner = CliRunner()
+    expected_count = bcdata.get_count(AIRPORTS_TABLE)
     result = runner.invoke(cli, ["info", AIRPORTS_TABLE])
     assert result.exit_code == 0
     assert 'name": "{}"'.format(AIRPORTS_TABLE) in result.output
-    assert '"count": 451' in result.output
+    assert '"count": {}'.format(expected_count) in result.output
 
 
 def test_info_package():
     runner = CliRunner()
+    expected_count = bcdata.get_count(AIRPORTS_TABLE)
     result = runner.invoke(cli, ["info", AIRPORTS_PACKAGE])
     assert result.exit_code == 0
     assert 'name": "{}"'.format(AIRPORTS_TABLE) in result.output
-    assert '"count": 451' in result.output
+    assert '"count": {}'.format(expected_count) in result.output
 
 
 def test_list():
@@ -45,9 +45,10 @@ def test_list():
 
 def test_cat():
     runner = CliRunner()
+    expected_count = bcdata.get_count(AIRPORTS_TABLE)
     result = runner.invoke(cli, ["cat", AIRPORTS_TABLE])
     assert result.exit_code == 0
-    assert len(result.output.split("\n")) == 452
+    assert len(result.output.split("\n")) == expected_count + 1
 
 
 def test_cat_query():
