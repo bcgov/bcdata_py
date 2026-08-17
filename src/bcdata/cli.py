@@ -5,12 +5,25 @@ import re
 import sys
 
 import click
-from cligj import compact_opt, indent_opt, quiet_opt, verbose_opt
 
 import bcdata
 from bcdata.database import Database
 
 LOG_FORMAT = "%(asctime)s:%(levelname)s:%(name)s: %(message)s"
+
+# inlined from cligj (unmaintained), as per
+# https://github.com/rasterio/rasterio/pull/3364
+verbose_opt = click.option("--verbose", "-v", count=True, help="Increase verbosity.")
+
+quiet_opt = click.option("--quiet", "-q", count=True, help="Decrease verbosity.")
+
+indent_opt = click.option(
+    "--indent", type=int, default=None, help="Indentation level for JSON output"
+)
+
+compact_opt = click.option(
+    "--compact/--not-compact", default=False, help="Use compact separators (',', ':')."
+)
 
 
 def configure_logging(verbosity):

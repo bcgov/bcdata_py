@@ -1,5 +1,4 @@
 click>=8.0
-cligj>=0.5
 geoalchemy2>=0.15
 geopandas>=1.0
 owslib>=0.31
