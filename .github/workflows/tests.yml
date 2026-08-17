@@ -20,12 +20,15 @@ on:
       - 'src/bcdata/**'
       - 'tests/**'
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     name: Lint with ruff
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install uv
         uses: astral-sh/setup-uv@v3
       # ruff version pinned here should match the rev in .pre-commit-config.yaml
@@ -65,7 +68,7 @@ jobs:
             gdal-version: '3.13.2'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Update and install postgresql client
         run: |
