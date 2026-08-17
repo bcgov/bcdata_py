@@ -326,10 +326,10 @@ Use some other tool to reproject the data as required.
 
 ## Development and testing
 
-`bc2pg` tests require database `postgresql://postgres@localhost:5432/test_bcdata` exists and has PostGIS installed:
+`bc2pg` tests require a PostGIS database, referenced via the `DATABASE_URL` environment variable (matching the image used in CI, see `.github/workflows/tests.yml`). Start one locally with `docker compose`:
 
-    psql -c "create database test_bcdata"
-    psql test_bcdata -c "create extension postgis"
+    $ docker compose up -d
+    $ export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
 
 Create virtualenv and install `bcdata` in development mode:
 
