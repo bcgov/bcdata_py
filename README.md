@@ -331,14 +331,12 @@ Use some other tool to reproject the data as required.
     $ docker compose up -d
     $ export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
 
-Create virtualenv and install `bcdata` in development mode:
+Clone the repo and install `bcdata` in development mode with [`uv`](https://docs.astral.sh/uv/):
 
     $ git clone git@github.com:bcgov/bcdata_py.git
     $ cd bcdata_py
-    $ python -m venv .venv
-    $ source .venv/bin/activate
-    (.venv)$ pip install -e .[test]
-    (.venv)$ py.test
+    $ uv sync --extra test
+    $ uv run pytest
 
 
 ## Other implementations

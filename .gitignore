@@ -56,5 +56,8 @@ target/
 # OS X
 .DS_Store
 
+# uv-managed virtual environment
+.venv/
+
 # ignore generated file that gets manually copied into README
 cli.md

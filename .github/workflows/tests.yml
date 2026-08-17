@@ -5,7 +5,7 @@ on:
     branches: [ main]
     paths:
       - '.github/workflows/tests.yaml'
-      - 'requirements*.txt'
+      - 'uv.lock'
       - 'MANIFEST.in'
       - 'pyproject.toml'
       - 'src/bcdata/**'
@@ -14,7 +14,7 @@ on:
     branches: [ main ]
     paths:
       - '.github/workflows/tests.yaml'
-      - 'requirements*.txt'
+      - 'uv.lock'
       - 'MANIFEST.in'
       - 'pyproject.toml'
       - 'src/bcdata/**'
@@ -74,16 +74,13 @@ jobs:
             python3-pip \
             g++
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
       - name: Install dependencies
-        run: |
-          python${{ matrix.python-version }} -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install .[test]
+        run: uv sync --extra test --python python${{ matrix.python-version }}
 
       - name: Run tests
-        run: |
-          . .venv/bin/activate
-          python -m pytest -v -rxXs
+        run: uv run pytest -v -rxXs
         env:
           DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
