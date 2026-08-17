@@ -7,8 +7,11 @@ jobs:
     name: Build distribution 📦
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Install uv
       uses: astral-sh/setup-uv@v3
     - name: Build a binary wheel and a source tarball
