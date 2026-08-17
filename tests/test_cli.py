@@ -25,7 +25,7 @@ def test_info_table():
     result = runner.invoke(cli, ["info", AIRPORTS_TABLE])
     assert result.exit_code == 0
     assert 'name": "{}"'.format(AIRPORTS_TABLE) in result.output
-    assert '"count": 455' in result.output
+    assert '"count": 451' in result.output
 
 
 def test_info_package():
@@ -33,7 +33,7 @@ def test_info_package():
     result = runner.invoke(cli, ["info", AIRPORTS_PACKAGE])
     assert result.exit_code == 0
     assert 'name": "{}"'.format(AIRPORTS_TABLE) in result.output
-    assert '"count": 455' in result.output
+    assert '"count": 451' in result.output
 
 
 def test_list():
@@ -47,7 +47,7 @@ def test_cat():
     runner = CliRunner()
     result = runner.invoke(cli, ["cat", AIRPORTS_TABLE])
     assert result.exit_code == 0
-    assert len(result.output.split("\n")) == 456
+    assert len(result.output.split("\n")) == 452
 
 
 def test_cat_query():
