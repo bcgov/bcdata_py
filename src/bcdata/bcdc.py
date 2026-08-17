@@ -100,25 +100,26 @@ def get_table_definition(table_name):
             # iterate through resources associated with each package
             for resource in result["resources"]:
                 # only examine geographic resources with object name key
-                if "object_name" in resource.keys() and resource["bcdc_type"] == "geographic":
-                    # confirm that object name matches table name and schema is present
-                    if (
-                        (
-                            table_name == resource["object_name"]
-                            # hack to handle object name / table name mismatch for NR Districts
-                            or (
-                                table_name == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SPG"
-                                and resource["object_name"]
-                                == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SP"
-                            )
+                # confirm that object name matches table name and schema is present
+                if (
+                    "object_name" in resource
+                    and resource["bcdc_type"] == "geographic"
+                    and (
+                        table_name == resource["object_name"]
+                        # hack to handle object name / table name mismatch for NR Districts
+                        or (
+                            table_name == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SPG"
+                            and resource["object_name"]
+                            == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SP"
                         )
-                        and "details" in resource.keys()
-                        and resource["details"] != []
-                    ):
-                        table_definition["schema"] = resource["details"]
-                        # look for comments only if details/schema was found
-                        if "object_table_comments" in resource.keys():
-                            table_definition["comments"] = resource["object_table_comments"]
+                    )
+                    and "details" in resource
+                    and resource["details"] != []
+                ):
+                    table_definition["schema"] = resource["details"]
+                    # look for comments only if details/schema was found
+                    if "object_table_comments" in resource:
+                        table_definition["comments"] = resource["object_table_comments"]
 
     if not table_definition["schema"]:
         log.warning(f"BC Data Catalouge API search provides no schema for: {table_name}")

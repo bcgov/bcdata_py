@@ -1,8 +1,0 @@
-click>=8.0
-geoalchemy2>=0.15
-geopandas>=1.0
-owslib>=0.31
-psycopg2-binary>=2.9
-requests>=2.32
-sqlalchemy>=2.0
-stamina>=24.2

@@ -98,7 +98,7 @@ def test_get_data_count():
 
 def test_get_data_lowercase():
     data = bcdata.get_data(AIRPORTS_TABLE, lowercase=True, count=1)
-    assert "airport_name" in data["features"][0]["properties"].keys()
+    assert "airport_name" in data["features"][0]["properties"]
 
 
 def test_get_data_crs():

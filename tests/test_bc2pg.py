@@ -1,6 +1,7 @@
 import os
 
 import pytest
+from psycopg2 import errors as pg_errors
 
 import bcdata
 from bcdata.database import Database
@@ -83,17 +84,17 @@ def test_bc2pg_geometry_type():
 
 
 def test_bc2pg_geometry_type_mismatch():
-    with pytest.raises(Exception):
+    with pytest.raises(pg_errors.InvalidParameterValue):
         bcdata.bc2pg(AIRPORTS_TABLE, DB_URL, count=10, geometry_type="LINESTRING")
 
 
 def test_bc2pg_geometry_type_invalid():
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         bcdata.bc2pg(AIRPORTS_TABLE, DB_URL, count=10, geometry_type="MULTIPOLYGONZ")
 
 
 def test_bc2pg_primary_key_invalid():
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         bcdata.bc2pg(AIRPORTS_TABLE, DB_URL, count=10, primary_key="airport_primary_key")
 
 

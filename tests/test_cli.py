@@ -23,8 +23,8 @@ def test_info_table():
     expected_count = bcdata.get_count(AIRPORTS_TABLE)
     result = runner.invoke(cli, ["info", AIRPORTS_TABLE])
     assert result.exit_code == 0
-    assert 'name": "{}"'.format(AIRPORTS_TABLE) in result.output
-    assert '"count": {}'.format(expected_count) in result.output
+    assert f'name": "{AIRPORTS_TABLE}"' in result.output
+    assert f'"count": {expected_count}' in result.output
 
 
 def test_info_package():
@@ -32,8 +32,8 @@ def test_info_package():
     expected_count = bcdata.get_count(AIRPORTS_TABLE)
     result = runner.invoke(cli, ["info", AIRPORTS_PACKAGE])
     assert result.exit_code == 0
-    assert 'name": "{}"'.format(AIRPORTS_TABLE) in result.output
-    assert '"count": {}'.format(expected_count) in result.output
+    assert f'name": "{AIRPORTS_TABLE}"' in result.output
+    assert f'"count": {expected_count}' in result.output
 
 
 def test_list():

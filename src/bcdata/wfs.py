@@ -5,7 +5,7 @@ import os
 import sys
 import warnings
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -51,7 +51,7 @@ class ServiceException(Exception):
     pass
 
 
-class BCWFS(object):
+class BCWFS:
     """Wrapper around web feature service"""
 
     def __init__(self, refresh=False):
@@ -94,15 +94,12 @@ class BCWFS(object):
         if not os.path.exists(os.path.join(cache_file)):
             return True
         else:
-            mod_date = datetime.fromtimestamp(os.path.getmtime(cache_file))
+            mod_date = datetime.fromtimestamp(os.path.getmtime(cache_file), tz=timezone.utc)
             # if file older than specified days or empty, return true
-            if (
-                mod_date < (datetime.now() - timedelta(days=self.cache_refresh_days))
+            return (
+                mod_date < (datetime.now(tz=timezone.utc) - timedelta(days=self.cache_refresh_days))
                 or os.stat(cache_file).st_size == 0
-            ):
-                return True
-            else:
-                return False
+            )
 
     @stamina.retry(on=requests.HTTPError, timeout=60)
     def _request_schema(self, table):
@@ -337,8 +334,7 @@ class BCWFS(object):
                 bounds_crs=bounds_crs,
                 geom_column=geom_column,
             )
-            if count > n:
-                count = n
+            count = min(count, n)
 
         log.info(f"Total features requested: {count}")
 

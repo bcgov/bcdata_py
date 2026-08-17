@@ -58,10 +58,8 @@ def bounds_handler(ctx, param, value):
             retval = tuple(float(x) for x in re.split(r"[,\s]+", value))
             assert len(retval) == 4
             return retval
-        except Exception:
-            raise click.BadParameter(
-                "{0!r} is not a valid bounding box representation".format(value)
-            )
+        except Exception:  # noqa: BLE001 - any parse failure should become a clean CLI error
+            raise click.BadParameter(f"{value!r} is not a valid bounding box representation")
     else:  # pragma: no cover
         return retval
 
@@ -409,7 +407,7 @@ def bc2pg(
     # if refreshing, flush from temp bcdata schema to target schema
     if refresh:
         db = Database(db_url)
-        s, table = out_table.split(".")
+        _, table = out_table.split(".")
         db.refresh(schema_target, table)
         out_table = schema_target + "." + table
         if timestamp:
@@ -417,4 +415,4 @@ def bc2pg(
 
     # do not notify of data load completion when no data load has occured
     if not schema_only:
-        log.info("Load of {} to {} in {} complete".format(dataset, out_table, db_url))
+        log.info(f"Load of {dataset} to {out_table} in {db_url} complete")
