@@ -173,8 +173,15 @@ class BCWFS:
         The WFS gateway itself can take up to ~60s to fail with a 504, so
         the retry timeout above is sized to fit several such attempts
         rather than being exhausted by a single one.
+
+        No connect timeout is set (matching requests/urllib3's own default
+        of blocking until the OS gives up) - a hardcoded 10s connect timeout
+        was observed tripping on GitHub-hosted runners, whose handshake to
+        openmaps.gov.bc.ca can exceed that (see issue #246). The read
+        timeout stays bounded so a connected-but-hanging server is still
+        caught.
         """
-        r = requests.get(url, params=params, headers=self.request_headers, timeout=(10, 65))
+        r = requests.get(url, params=params, headers=self.request_headers, timeout=(None, 65))
         if not silent:
             log.info(r.url)
         else:
