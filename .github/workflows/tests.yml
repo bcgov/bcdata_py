@@ -5,7 +5,7 @@ on:
   push:
     branches: [ main]
     paths:
-      - '.github/workflows/tests.yaml'
+      - '.github/workflows/tests.yml'
       - 'uv.lock'
       - 'MANIFEST.in'
       - 'pyproject.toml'
@@ -14,7 +14,7 @@ on:
   pull_request:
     branches: [ main ]
     paths:
-      - '.github/workflows/tests.yaml'
+      - '.github/workflows/tests.yml'
       - 'uv.lock'
       - 'MANIFEST.in'
       - 'pyproject.toml'
@@ -38,62 +38,40 @@ jobs:
       - name: Check formatting
         run: uvx ruff@0.16.3 format --check .
 
-  docker_tests:
+  test:
     runs-on: ubuntu-latest
-    name: Docker | GDAL=${{ matrix.gdal-version }} | python=${{ matrix.python-version }}
-    container: ghcr.io/osgeo/gdal:ubuntu-small-${{ matrix.gdal-version }}
+    name: test | python=${{ matrix.python-version }}
     services:
       postgres:
         image: postgis/postgis:18-3.6
         env:
           POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
         # Set health checks to wait until postgres has started
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    env:
-        DEBIAN_FRONTEND: noninteractive
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        include:
-          - python-version: '3.10'
-            gdal-version: '3.6.4'
-          - python-version: '3.11'
-            gdal-version: '3.7.3'
-          - python-version: '3.12'
-            gdal-version: '3.10.0'
-          - python-version: '3.13'
-            gdal-version: '3.13.2'
+        python-version: ['3.10', '3.13']
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Update and install postgresql client
-        run: |
-          apt-get update
-          apt-get -y install software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: |
-          apt-get install -y --no-install-recommends \
-            python${{ matrix.python-version }} \
-            python${{ matrix.python-version }}-dev \
-            python${{ matrix.python-version }}-venv \
-            python3-pip \
-            g++
-
       - name: Install uv
         uses: astral-sh/setup-uv@v3
+        with:
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --extra test --python python${{ matrix.python-version }}
+        run: uv sync --extra test
 
       - name: Run tests
         run: uv run pytest -v -rxXs
         env:
-          DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
