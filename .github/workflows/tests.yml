@@ -44,7 +44,7 @@ jobs:
     container: ghcr.io/osgeo/gdal:ubuntu-small-${{ matrix.gdal-version }}
     services:
       postgres:
-        image: postgis/postgis:17-3.5
+        image: postgis/postgis:18-3.6
         env:
           POSTGRES_PASSWORD: postgres
         # Set health checks to wait until postgres has started

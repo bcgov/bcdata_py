@@ -1,10 +1,13 @@
 services:
   postgres:
-    image: postgis/postgis:17-3.5
+    image: postgis/postgis:18-3.6-alpine
+    pull_policy: never
+    build:
+      context: https://github.com/postgis/docker-postgis.git#master:18-3.6/alpine
     environment:
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "8080:5432"
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 10s

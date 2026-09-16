@@ -6,7 +6,7 @@ from psycopg2 import errors as pg_errors
 import bcdata
 from bcdata.database import Database
 
-DB_URL = os.environ.get("DATABASE_URL")
+DB_URL = os.environ.get("BCDATA_TEST_DATABASE_URL")
 DB_CONNECTION = Database(url=DB_URL)
 AIRPORTS_PACKAGE = "bc-airports"
 AIRPORTS_TABLE = "whse_imagery_and_base_maps.gsr_airports_svw"

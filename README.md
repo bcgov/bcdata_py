@@ -331,10 +331,14 @@ Clone the repo:
     $ git clone git@github.com:bcgov/bcdata_py.git
     $ cd bcdata_py
 
-`bc2pg` tests require a PostGIS database, referenced via the `DATABASE_URL` environment variable (matching the image used in CI, see `.github/workflows/tests.yml`). Start one locally with `docker compose`:
+`bc2pg` tests require a PostGIS database, referenced via the `BCDATA_TEST_DATABASE_URL` environment variable.
+Start one locally with docker (after editing the `docker-compose.yml` as needed):
 
+    $ docker compose build  # default to building the postgis image since official pre-built images are not available for all platforms
     $ docker compose up -d
-    $ export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
+    $ export BCDATA_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:8080/postgres
+
+
 
 install `bcdata` in development mode with [`uv`](https://docs.astral.sh/uv/):
 
