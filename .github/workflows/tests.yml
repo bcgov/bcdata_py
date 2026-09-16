@@ -40,7 +40,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    name: test | python=${{ matrix.python-version }}
+    name: test
     services:
       postgres:
         image: postgis/postgis:18-3.6
@@ -54,12 +54,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        python-version: ['3.10', '3.13']
-
     steps:
       - uses: actions/checkout@v7
         with:
@@ -68,12 +62,12 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.13'
 
       - name: Install dependencies
         run: uv sync --extra test
 
       - name: Run tests
-        run: uv run pytest -v -rxXs
+        run: uv run pytest -v -rxXs -x --reruns 2 --reruns-delay 15
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres

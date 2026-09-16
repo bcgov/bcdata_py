@@ -36,6 +36,7 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   "pytest",
+  "pytest-rerunfailures",
   "pre-commit",
   "requests-mock"
 ]

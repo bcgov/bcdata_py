@@ -95,7 +95,15 @@ def test_bc2pg_geometry_type_invalid():
 
 def test_bc2pg_primary_key_invalid():
     with pytest.raises(ValueError):
-        bcdata.bc2pg(AIRPORTS_TABLE, DB_URL, count=10, primary_key="airport_primary_key")
+        # geometry_type is supplied to skip the live fetch bc2pg would otherwise
+        # make to auto-detect it - irrelevant to the primary_key check under test
+        bcdata.bc2pg(
+            AIRPORTS_TABLE,
+            DB_URL,
+            count=10,
+            primary_key="airport_primary_key",
+            geometry_type="POINT",
+        )
 
 
 def test_bc2pg_z():
