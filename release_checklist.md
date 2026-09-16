@@ -1,8 +1,6 @@
 # Release checklist
 
 - run tests (`uv run pytest`)
-- bump version in `__init__.py`
-- update `CHANGES.txt`
 - confirm dependencies/classifiers in `pyproject.toml` are current
 - run `uv lock` to update `uv.lock`
 - commit changes on dev branch, create pr, merge pr to main
