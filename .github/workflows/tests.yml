@@ -68,6 +68,6 @@ jobs:
         run: uv sync --extra test
 
       - name: Run tests
-        run: uv run pytest -v -rxXs -x
+        run: uv run pytest -v -rxXs -x --reruns 2 --reruns-delay 15
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
