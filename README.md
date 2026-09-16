@@ -11,8 +11,6 @@ but most sources are available only via WFS - and the syntax to download WFS dat
 
 This tool attempts to simplify downloads of BC geographic data and smoothly integrate with PostGIS and Python GIS tools like `geopandas` and `fiona`. The tool only accesses geographic data [avialable via WFS](https://bcgov.github.io/data-publication/pages/tips_tricks_webservices.html) - for other BC open data, download the files directly with `requests` / `curl` / `ogr2ogr` / etc (or the [bcdata R package](https://github.com/bcgov/bcdata)).
 
-If downloads are failing, consult the [BCGov Data Systems and Services uptime monitor](https://uptime.com/statuspage/bcgov-dss) - this tool depends on BC Open Geospatial Web Services API at [openmaps.gov.bc.ca](https://openmaps.gov.bc.ca/geo/pub/ows?service=WFS&request=Getcapabilities) and the [BC Data Catalogue API](https://catalogue.data.gov.bc.ca/dataset/bc-data-catalogue-api). 
-
 **Disclaimer**  
 *Data are generally licensed as [OGL-BC](http://www2.gov.bc.ca/gov/content/governments/about-the-bc-government/databc/open-data/open-government-license-bc), but it is the user's responsibility to check the licensing for any downloads.*
 
