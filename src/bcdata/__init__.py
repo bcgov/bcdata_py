@@ -1,5 +1,6 @@
 import requests
 
+from ._version import __version__ as __version__
 from .bc2pg import bc2pg as bc2pg
 from .bcdc import get_table_definition as get_table_definition
 from .bcdc import get_table_name as get_table_name
@@ -20,5 +21,3 @@ if response.status_code == 200:
 else:
     raise ConnectionError(f"Failed to download primary key database at {PRIMARY_KEY_DB_URL}")
     primary_keys = {}
-
-__version__ = "0.17.1"

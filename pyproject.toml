@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -47,8 +47,8 @@ bcdata = "bcdata.cli:cli"
 Homepage = "https://github.com/smnorris/bcdata"
 Issues = "https://github.com/smnorris/bcdata"
 
-[tool.setuptools.dynamic]
-version = {attr = "bcdata.__version__"}
+[tool.setuptools_scm]
+write_to = "src/bcdata/_version.py"
 
 [tool.ruff]
 line-length = 100
