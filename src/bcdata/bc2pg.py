@@ -120,7 +120,7 @@ def bc2pg(
         # ensure geom type is valid
         geometry_type = geometry_type.upper()
         if geometry_type not in SUPPORTED_TYPES:
-            raise ValueError("Geometry type {geometry_type} is not supported")
+            raise ValueError(f"Geometry type {geometry_type} is not supported")
 
         # if primary key is not supplied, use default (if present in list)
         if not primary_key and dataset.lower() in bcdata.primary_keys:
@@ -131,7 +131,7 @@ def bc2pg(
             c["column_name"].upper() for c in table_definition["schema"]
         ]:
             raise ValueError(
-                "Column {primary_key} specified as primary_key does not exist in source"
+                f"Column {primary_key} specified as primary_key does not exist in source"
             )
 
         # build the table definition and create table
