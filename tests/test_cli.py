@@ -7,7 +7,7 @@ import bcdata
 from bcdata.cli import cli
 from bcdata.database import Database
 
-DB_URL = os.environ.get("DATABASE_URL")
+DB_URL = os.environ.get("BCDATA_TEST_DATABASE_URL")
 DB_CONNECTION = Database(url=DB_URL)
 AIRPORTS_PACKAGE = "bc-airports"
 AIRPORTS_TABLE = "WHSE_IMAGERY_AND_BASE_MAPS.GSR_AIRPORTS_SVW"

@@ -1,9 +1,9 @@
 services:
   postgres:
-    image: postgis/postgis:18-3.6-alpine
+    image: postgis/postgis:18-3.7-alpine
     pull_policy: never
     build:
-      context: https://github.com/postgis/docker-postgis.git#master:18-3.6/alpine
+      context: https://github.com/postgis/docker-postgis.git#master:18-3.7/alpine
     environment:
       POSTGRES_PASSWORD: postgres
     ports:
