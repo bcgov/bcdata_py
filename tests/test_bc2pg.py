@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from psycopg2 import errors as pg_errors
+from psycopg import errors as pg_errors
 
 import bcdata
 from bcdata.database import Database
