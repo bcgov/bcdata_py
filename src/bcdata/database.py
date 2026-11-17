@@ -2,9 +2,10 @@ import logging
 import os
 
 from geoalchemy2 import Geometry
-from psycopg2 import errors, sql
+from psycopg import errors, sql
 from sqlalchemy import Column, MetaData, Table, create_engine
 from sqlalchemy.dialects.postgresql import DATE, NUMERIC, VARCHAR
+from sqlalchemy.engine import make_url
 
 log = logging.getLogger(__name__)
 
@@ -14,7 +15,12 @@ class Database:
 
     def __init__(self, url=None):
         self.url = url or os.environ.get("DATABASE_URL")
-        self.engine = create_engine(self.url)
+        # bcdata uses psycopg (v3) directly; request that driver explicitly
+        # (SQLAlchemy <2.1 defaults bare postgresql:// urls to psycopg2)
+        sa_url = make_url(self.url)
+        if sa_url.drivername in ("postgresql", "postgres", "postgresql+psycopg2"):
+            sa_url = sa_url.set(drivername="postgresql+psycopg")
+        self.engine = create_engine(sa_url)
         # make sure postgis is available
         try:
             self.query("SELECT postgis_full_version()")
