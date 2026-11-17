@@ -5,7 +5,7 @@ import os
 import sys
 import warnings
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -138,10 +138,10 @@ class BCWFS:
         if not os.path.exists(os.path.join(cache_file)):
             return True
         else:
-            mod_date = datetime.fromtimestamp(os.path.getmtime(cache_file), tz=timezone.utc)
+            mod_date = datetime.fromtimestamp(os.path.getmtime(cache_file), tz=UTC)
             # if file older than specified days or empty, return true
             return (
-                mod_date < (datetime.now(tz=timezone.utc) - timedelta(days=self.cache_refresh_days))
+                mod_date < (datetime.now(tz=UTC) - timedelta(days=self.cache_refresh_days))
                 or os.stat(cache_file).st_size == 0
             )
 
