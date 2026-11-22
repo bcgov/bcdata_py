@@ -286,6 +286,92 @@ def cat(
 @cli.command()
 @click.argument("dataset", type=click.STRING, shell_complete=complete_dataset_names)
 @click.option(
+    "--out",
+    "-o",
+    "out_path",
+    help="Output path or URI (eg s3://bucket/key.parquet). Defaults to <object_name>.parquet",
+)
+@click.option(
+    "--query",
+    help="A valid CQL or ECQL query",
+)
+@click.option(
+    "--count",
+    "-c",
+    default=None,
+    type=int,
+    help="Number of features to request",
+)
+@bounds_opt
+@click.option(
+    "--bounds-crs",
+    "--bounds_crs",
+    help="CRS of provided bounds",
+    default="EPSG:3005",
+)
+@click.option("--sortby", "-s", help="Name of sort field for paged requests")
+@lowercase_opt
+@click.option(
+    "--row-group-size",
+    default=50000,
+    type=click.IntRange(min=1),
+    show_default=True,
+    help="Maximum rows per parquet row group",
+)
+@click.option(
+    "--no-check",
+    is_flag=True,
+    help="Write even if the download fails consistency checks (feature count, "
+    "duplicate primary keys)",
+)
+@verbose_opt
+@quiet_opt
+def parquet(
+    dataset,
+    out_path,
+    query,
+    count,
+    bounds,
+    bounds_crs,
+    sortby,
+    lowercase,
+    row_group_size,
+    no_check,
+    verbose,
+    quiet,
+):
+    """Write DataBC features to a GeoParquet 2.0 file.
+
+    \b
+      $ bcdata parquet bc-airports
+      $ bcdata parquet bc-airports -o s3://my-bucket/airports.parquet
+
+    Features are spatially sorted (Hilbert curve) and geometries are stored in
+    BC Albers using the native Parquet GEOMETRY type, with GeoParquet metadata.
+
+    The download is checked before writing: if the number of features received
+    differs from the WFS count, or the primary key has duplicates, nothing is
+    written and the command fails.
+    """
+    verbosity = verbose - quiet
+    configure_logging(verbosity)
+    bcdata.to_parquet(
+        dataset,
+        out_path=out_path,
+        query=query,
+        bounds=bounds,
+        bounds_crs=bounds_crs,
+        count=count,
+        sortby=sortby,
+        lowercase=lowercase,
+        row_group_size=row_group_size,
+        check=not no_check,
+    )
+
+
+@cli.command()
+@click.argument("dataset", type=click.STRING, shell_complete=complete_dataset_names)
+@click.option(
     "--db_url",
     "-db",
     help="Target database url, defaults to $DATABASE_URL environment variable if set",

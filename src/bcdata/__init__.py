@@ -3,6 +3,7 @@ from ._version import __version__ as __version__
 from .bc2pg import bc2pg as bc2pg
 from .bcdc import get_table_definition as get_table_definition
 from .bcdc import get_table_name as get_table_name
+from .parquet import to_parquet as to_parquet
 from .wfs import get_count as get_count
 from .wfs import get_data as get_data
 from .wfs import get_sortkey as get_sortkey
