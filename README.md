@@ -30,7 +30,7 @@ If this is not the case on your system, the [GeoPandas guide](https://geopandas.
 
 ### Default PostgreSQL database
 
-The default target database connection (used by `bc2pg`) can be set via the `DATABASE_URL` environment variable (the password parameter should not be required if using a [.pgpass file](https://www.postgresql.org/docs/current/libpq-pgpass.html))
+The default target database connection (used by `bc2pg`, which is [deprecated](https://github.com/bcgov/bcdata_py/issues/270)) can be set via the `DATABASE_URL` environment variable (the password parameter should not be required if using a [.pgpass file](https://www.postgresql.org/docs/current/libpq-pgpass.html))
 
 Linux/Mac: `export DATABASE_URL=postgresql://{username}:{password}@{hostname}:{port}/{database}`
 
@@ -97,7 +97,7 @@ Options:
   --help     Show this message and exit.
 
 Commands:
-  bc2pg    Load a DataBC WFS layer to a postgres db
+  bc2pg    [DEPRECATED] Load a DataBC WFS layer to a postgres db
   cat      Write DataBC features to stdout as GeoJSON feature objects.
   dump     Write DataBC features to stdout as GeoJSON feature collection.
   info     Print basic metadata about a DataBC WFS layer as JSON.
@@ -112,9 +112,13 @@ $ bcdata bc2pg --help
 
 Usage: bcdata bc2pg [OPTIONS] DATASET
 
-  Load a DataBC WFS layer to a postgres db
+  [DEPRECATED] Load a DataBC WFS layer to a postgres db
 
    $ bcdata bc2pg whse_imagery_and_base_maps.gsr_airports_svw
+
+  Deprecated and will be removed in a future release. Load data to PostgreSQL
+  with ogr2ogr instead (eg from bcdata cat, or from GeoParquet files written
+  by bcdata parquet) - see https://github.com/bcgov/bcdata_py/issues/270
 
 Options:
   -db, --db_url TEXT              Target database url, defaults to
@@ -344,15 +348,24 @@ Dump to Parquet on S3:
     $ bcdata dump bc-airports | \
         ogr2ogr -f Parquet /vsis3/$BUCKET/airports.parquet /vsistdin/
 
-Load data to postgres and run a spatial query:
+Load data to postgres with `ogr2ogr` (`bc2pg` is [deprecated](https://github.com/bcgov/bcdata_py/issues/270)) and run a spatial query:
 
-    $ bcdata bc2pg bc-airports \
-        --db_url postgresql://postgres:postgres@localhost:5432/postgis
+    $ export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgis
 
-    $ bcdata bc2pg WHSE_LEGAL_ADMIN_BOUNDARIES.ABMS_MUNICIPALITIES_SP \
-        --db_url postgresql://postgres:postgres@localhost:5432/postgis
+    $ psql $DATABASE_URL -c "CREATE SCHEMA IF NOT EXISTS whse_imagery_and_base_maps;
+        CREATE SCHEMA IF NOT EXISTS whse_legal_admin_boundaries"
 
-    $ psql -c \
+    $ bcdata cat bc-airports --lowercase | \
+        ogr2ogr -f PostgreSQL PG:$DATABASE_URL GeoJSONSeq:/vsistdin/ \
+          -nln whse_imagery_and_base_maps.gsr_airports_svw \
+          -a_srs EPSG:3005 -lco GEOMETRY_NAME=geom -nlt PROMOTE_TO_MULTI
+
+    $ bcdata cat WHSE_LEGAL_ADMIN_BOUNDARIES.ABMS_MUNICIPALITIES_SP --lowercase | \
+        ogr2ogr -f PostgreSQL PG:$DATABASE_URL GeoJSONSeq:/vsistdin/ \
+          -nln whse_legal_admin_boundaries.abms_municipalities_sp \
+          -a_srs EPSG:3005 -lco GEOMETRY_NAME=geom -nlt PROMOTE_TO_MULTI
+
+    $ psql $DATABASE_URL -c \
       "SELECT airport_name
        FROM whse_imagery_and_base_maps.gsr_airports_svw a
        INNER JOIN whse_legal_admin_boundaries.abms_municipalities_sp m

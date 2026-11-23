@@ -217,3 +217,15 @@ def test_bc2pg_append_to_other():
     r = DB_CONNECTION.query("select * from whse_imagery_and_base_maps.arpt")
     assert len(r) == 2
     DB_CONNECTION.execute("drop table whse_imagery_and_base_maps.arpt")
+
+
+def test_bc2pg_deprecated(caplog):
+    # the notice is logged (visible even though bcdata suppresses python warnings)
+    # and raised as a DeprecationWarning, before anything else is done
+    with (
+        pytest.warns(DeprecationWarning, match="bc2pg is deprecated"),
+        pytest.raises(ValueError, match="not compatible"),
+    ):
+        bcdata.bc2pg(AIRPORTS_TABLE, DB_URL, schema_only=True, append=True)
+    assert "bc2pg is deprecated" in caplog.text
+    assert "issues/270" in caplog.text

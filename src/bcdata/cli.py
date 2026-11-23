@@ -448,10 +448,15 @@ def bc2pg(
     verbose,
     quiet,
 ):
-    """Load a DataBC WFS layer to a postgres db
+    """[DEPRECATED] Load a DataBC WFS layer to a postgres db
 
     \b
      $ bcdata bc2pg whse_imagery_and_base_maps.gsr_airports_svw
+
+    Deprecated and will be removed in a future release. Load data to
+    PostgreSQL with ogr2ogr instead (eg from bcdata cat, or from GeoParquet
+    files written by bcdata parquet) - see
+    https://github.com/bcgov/bcdata_py/issues/270
     """
     # for this command, default to INFO level logging
     verbosity = verbose - quiet

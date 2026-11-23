@@ -1,4 +1,5 @@
 import logging
+import warnings
 
 import numpy
 from shapely.geometry.linestring import LineString
@@ -13,6 +14,12 @@ from bcdata.database import Database
 from bcdata.wfs import BCWFS
 
 log = logging.getLogger(__name__)
+
+DEPRECATION_MESSAGE = (
+    "bc2pg is deprecated and will be removed in a future release. Load data to "
+    "PostgreSQL with ogr2ogr instead (eg from bcdata cat, or from GeoParquet files "
+    "written by bcdata parquet) - see https://github.com/bcgov/bcdata_py/issues/270"
+)
 
 SUPPORTED_TYPES = [
     "POINT",
@@ -45,7 +52,14 @@ def bc2pg(
     append=False,
     refresh=False,
 ):
-    """Request table definition from bcdc and replicate in postgres"""
+    """Request table definition from bcdc and replicate in postgres
+
+    Deprecated, see https://github.com/bcgov/bcdata_py/issues/270
+    """
+    # log the notice so it is visible (bcdata suppresses python warnings on import),
+    # and also raise a DeprecationWarning for tools that look for one
+    log.warning(DEPRECATION_MESSAGE)
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
     if schema_only and append:
         raise ValueError("Options schema_only and append are not compatible")
 
