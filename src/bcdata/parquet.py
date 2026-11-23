@@ -15,9 +15,10 @@ Writing is done in two passes so memory use stays bounded for large layers:
    written in fixed size row groups. Spatial sorting keeps row group bounding
    boxes tight, so readers can skip row groups when filtering by area.
 
-Output order is deterministic: ties on the Hilbert key are broken by the order
-features were received from WFS (which is sorted by primary key for paged
-requests).
+Output order is deterministic: ties on the Hilbert key (eg features without
+geometry) are broken by the order features were received from WFS, and WFS
+requests are always sorted (by the table's sort key, as for paged requests),
+even when a download fits in a single request.
 
 The "bcdata" metadata records two hashes, so a fresh download can be compared
 with an earlier file by reading only the file footers:
@@ -377,7 +378,9 @@ def to_parquet(
         bounds: (xmin, ymin, xmax, ymax) filter, in bounds_crs
         bounds_crs: CRS of bounds
         count: maximum number of features to download
-        sortby: sort field for paged requests (defaults to primary key)
+        sortby: sort field for requests (defaults to the table's sort key, see
+            BCWFS.get_sortkey). Requests are always sorted, even when the download
+            fits in one request, so features arrive in the same order every time.
         lowercase: write column names as lowercase
         row_group_size: maximum rows per parquet row group
         compression, compression_level: parquet compression
@@ -411,6 +414,12 @@ def to_parquet(
     if count:
         n_expected = min(count, n_expected)
 
+    # define_requests only sorts downloads that need several requests. Sort single
+    # request downloads too: unsorted, the server may return features in a different
+    # order each time, which changes the order of Hilbert ties in the output and so
+    # content_hash, although the data has not changed.
+    if not sortby:
+        sortby = WFS.get_sortkey(table)
     urls = WFS.define_requests(
         table, query=query, bounds=bounds, bounds_crs=bounds_crs, count=count, sortby=sortby
     )

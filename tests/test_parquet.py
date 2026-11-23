@@ -298,3 +298,21 @@ def test_hashes_in_metadata(airports, tmp_path):
     assert again["schema_hash"] == meta["schema_hash"]
     assert again["content_hash"] == meta["content_hash"]
     assert pq.read_metadata(out).num_row_groups > pq.read_metadata(airports).num_row_groups
+
+
+def test_single_request_is_sorted(tmp_path, monkeypatch):
+    # live: a download that fits in one request is still sorted, so features
+    # arrive in the same order every time (keeping content_hash stable)
+    from bcdata.wfs import BCWFS
+
+    urls = []
+    request = BCWFS._request_featurecollection
+
+    def record(self, url, silent=False):
+        urls.append(url)
+        return request(self, url, silent=silent)
+
+    monkeypatch.setattr(BCWFS, "_request_featurecollection", record)
+    bcdata.to_parquet(AIRPORTS_TABLE, str(tmp_path / "airports.parquet"))
+    assert len(urls) == 1
+    assert "sortby=" in urls[0]
