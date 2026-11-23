@@ -1,0 +1,94 @@
+name: Validate table metadata
+
+# Check src/bcdata/tables.toml against the live WFS and BC Data Catalogue:
+# every table must still be available and every primary_key / sort_key column
+# must still exist.
+#
+# - pull requests changing the metadata: fail the check if problems are found
+# - weekly schedule / manual run: open an issue listing the problems (or update
+#   the open one), and close it once validation passes again
+#
+# Problems in the metadata are reported by validate_tables.py with exit code 3.
+# Any other failure (eg the services refusing connections from the runner) fails
+# the run without touching issues, so outages don't create false reports.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 15 * * 1'  # Mondays 15:23 UTC
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/validate-tables.yml'
+      - 'src/bcdata/tables.toml'
+      - 'src/bcdata/_tables.py'
+      - 'scripts/validate_tables.py'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      ISSUE_TITLE: Table metadata validation failed
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # setuptools_scm needs full history/tags to derive the version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Validate table metadata
+        id: validate
+        run: |
+          set +e
+          uv run python scripts/validate_tables.py --report report.md
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          # 0 = valid, 3 = problems found (handled below); anything else = check could not run
+          if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
+            exit "$status"
+          fi
+
+      - name: Open or update issue
+        if: github.event_name != 'pull_request' && steps.validate.outputs.status == '3'
+        run: |
+          number=$(gh issue list --state open --search "\"$ISSUE_TITLE\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number" | head -1)
+          if [ -z "$number" ]; then
+            gh issue create --title "$ISSUE_TITLE" --body-file report.md
+          else
+            gh issue view "$number" --json body --jq .body > current.md
+            # only notify when the list of problems has changed
+            if ! diff -q <(sed 's/[[:space:]]*$//' current.md) <(sed 's/[[:space:]]*$//' report.md) > /dev/null; then
+              gh issue edit "$number" --body-file report.md
+              gh issue comment "$number" --body "The problems found have changed, see the updated description ($RUN_URL)."
+            fi
+          fi
+
+      - name: Close issue if validation passes
+        if: github.event_name != 'pull_request' && steps.validate.outputs.status == '0'
+        run: |
+          number=$(gh issue list --state open --search "\"$ISSUE_TITLE\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number" | head -1)
+          if [ -n "$number" ]; then
+            gh issue close "$number" --comment "Table metadata validation passes again ($RUN_URL)."
+          fi
+
+      - name: Fail if problems were found
+        if: steps.validate.outputs.status == '3'
+        run: |
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          exit 1

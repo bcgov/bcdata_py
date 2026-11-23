@@ -7,7 +7,6 @@ on:
     paths:
       - '.github/workflows/tests.yml'
       - 'uv.lock'
-      - 'MANIFEST.in'
       - 'pyproject.toml'
       - 'src/bcdata/**'
       - 'tests/**'
@@ -16,7 +15,6 @@ on:
     paths:
       - '.github/workflows/tests.yml'
       - 'uv.lock'
-      - 'MANIFEST.in'
       - 'pyproject.toml'
       - 'src/bcdata/**'
       - 'tests/**'
