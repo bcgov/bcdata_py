@@ -81,17 +81,14 @@ def get_table_name(package):
 
 def _resource_matches(table_name, resource):
     """Return True if resource is a geographic resource for table_name with a schema present"""
-    object_name = resource.get("object_name")
+    # the catalogue lists a few tables under a different object name (see tables.toml)
+    bcdc_object_name = bcdata.table_metadata.get(table_name.lower(), {}).get(
+        "bcdc_object_name", table_name
+    )
+    object_name = (resource.get("object_name") or "").upper()
     return (
         resource.get("bcdc_type") == "geographic"
-        and (
-            table_name == object_name
-            # hack to handle object name / table name mismatch for NR Districts
-            or (
-                table_name == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SPG"
-                and object_name == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SP"
-            )
-        )
+        and object_name in (table_name.upper(), bcdc_object_name.upper())
         and bool(resource.get("details"))
     )
 

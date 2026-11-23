@@ -319,8 +319,12 @@ class BCWFS:
     def get_sortkey(self, table):
         """Check data for unique columns available for sorting paged requests"""
         columns = list(self.get_schema(table)["properties"].keys())
-        # use known primary key if it is present in the bcdata repository
-        if table.lower() in bcdata.primary_keys:
+        # use sort key if one is recorded in the bundled table metadata
+        sort_key = bcdata.table_metadata.get(table.lower(), {}).get("sort_key")
+        if sort_key:
+            return sort_key.upper()
+        # otherwise use known primary key if it is present in the bundled table metadata
+        elif table.lower() in bcdata.primary_keys:
             return bcdata.primary_keys[table.lower()].upper()
         # if pk not known, use OBJECTID as default sort key when present
         elif "OBJECTID" in columns:

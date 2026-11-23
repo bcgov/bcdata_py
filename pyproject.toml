@@ -47,6 +47,9 @@ bcdata = "bcdata.cli:cli"
 Homepage = "https://github.com/smnorris/bcdata"
 Issues = "https://github.com/smnorris/bcdata"
 
+[tool.setuptools.package-data]
+bcdata = ["tables.toml"]
+
 [tool.setuptools_scm]
 write_to = "src/bcdata/_version.py"
 

@@ -1,5 +1,0 @@
-global-exclude .DS_Store
-global-exclude *.pyc
-exclude MANIFEST.in
-recursive-include tests *.py
-include LICENSE.txt README.md
