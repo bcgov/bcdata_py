@@ -199,3 +199,22 @@ def test_cql_bounds_filter():
     )
     assert len(data["features"]) == 1
     assert data["features"][0]["properties"]["AIRPORT_NAME"] == "Victoria International Airport"
+
+
+def test_get_data_count_zero():
+    # count=0 is a valid request for no features, not "count not provided"
+    assert bcdata.wfs.BCWFS().define_requests(AIRPORTS_TABLE, count=0) == []
+    assert len(bcdata.get_data(AIRPORTS_TABLE, count=0, as_gdf=True)) == 0
+
+
+def test_get_count_uses_provided_geom_column(monkeypatch):
+    WFS = bcdata.wfs.BCWFS()
+    calls = {}
+
+    def fake_request_count(table, **kwargs):
+        calls.update(kwargs)
+        return 1
+
+    monkeypatch.setattr(WFS, "_request_count", fake_request_count)
+    WFS.get_count(AIRPORTS_TABLE, geom_column="MY_GEOM")
+    assert calls["geom_column"] == "MY_GEOM"
