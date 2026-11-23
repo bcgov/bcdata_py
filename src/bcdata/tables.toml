@@ -4,8 +4,13 @@
 # Keys are lowercase table names, as returned by bcdata.list_tables() (lowercased).
 # Every field is optional - add a table only when there is something to record.
 #
-#   primary_key       column that uniquely identifies records; used as the default
-#                     sort key for paged requests and as the bc2pg primary key
+#   primary_key       column that is unique, never empty, and stable across source
+#                     refreshes - safe to use as a record identifier (bc2pg primary key,
+#                     joins, change detection). Also used to sort paged requests.
+#   sort_key          column that is unique and never empty within one download, but
+#                     not stable across refreshes - used only to sort paged requests,
+#                     never as an identifier. Takes precedence over primary_key for
+#                     sorting; must not be the same column as primary_key.
 #   bcdc_object_name  object name the BC Data Catalogue uses for the table, when it
 #                     differs from the table name
 #
@@ -73,6 +78,11 @@ primary_key = "parcel_fabric_poly_id"
 
 [tables."whse_environmental_monitoring.envcan_hydrometric_stn_sp"]
 primary_key = "hydrometric_station_id"
+
+[tables."whse_fish.fiss_fish_obsrvtn_pnt_sp"]
+# fish_observation_point_id is unique but is regenerated when the source is
+# refreshed: fine for paging one download, never as a persistent identifier
+sort_key = "fish_observation_point_id"
 
 [tables."whse_fish.fiss_stream_sample_sites_sp"]
 primary_key = "stream_sample_site_id"

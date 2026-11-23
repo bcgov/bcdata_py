@@ -22,8 +22,20 @@ def test_load_minimal():
     [
         ('[tables."a.b"]\nprimay_key = "id"\n', "Unknown field"),
         ('[tables."A.B"]\nprimary_key = "id"\n', "lowercase"),
+        ('[tables."a.b"]\nprimary_key = "id"\nsort_key = "id"\n', "same column"),
     ],
 )
 def test_load_invalid(text, message):
     with pytest.raises(ValueError, match=message):
         load_table_metadata(text)
+
+
+def test_sort_key_is_not_a_primary_key():
+    # an unstable unique id is used for sorting, but never exposed as a primary key
+    table = "whse_fish.fiss_fish_obsrvtn_pnt_sp"
+    assert bcdata.table_metadata[table]["sort_key"] == "fish_observation_point_id"
+    assert table not in bcdata.primary_keys
+
+
+def test_get_sortkey_prefers_sort_key():
+    assert bcdata.get_sortkey("whse_fish.fiss_fish_obsrvtn_pnt_sp") == "FISH_OBSERVATION_POINT_ID"

@@ -1,7 +1,7 @@
 """Validate the bundled table metadata (src/bcdata/tables.toml) against the live services.
 
-Checks that every table exists in the WFS, that each primary_key column is present
-in the table schema, and that each bcdc_object_name lets the BC Data Catalogue
+Checks that every table exists in the WFS, that each primary_key and sort_key column
+is present in the table schema, and that each bcdc_object_name lets the BC Data Catalogue
 search find the table's schema. Column values are not checked for uniqueness.
 
     python scripts/validate_tables.py
@@ -33,9 +33,10 @@ def main():
         if "bcdc_object_name" in fields and not schema:
             log.error(f"{table}: no schema found via bcdc_object_name {fields['bcdc_object_name']}")
             errors += 1
-        if "primary_key" in fields and fields["primary_key"] not in columns:
-            log.error(f"{table}: primary_key {fields['primary_key']} not found in table")
-            errors += 1
+        for key in ("primary_key", "sort_key"):
+            if key in fields and fields[key] not in columns:
+                log.error(f"{table}: {key} {fields[key]} not found in table")
+                errors += 1
 
     if errors:
         sys.exit(f"{errors} error(s) found in table metadata")

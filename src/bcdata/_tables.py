@@ -4,7 +4,7 @@ import tomllib
 from importlib.resources import files
 
 # fields a table entry may have - see the comments at the top of tables.toml
-FIELDS = {"primary_key", "bcdc_object_name"}
+FIELDS = {"primary_key", "sort_key", "bcdc_object_name"}
 
 
 def load_table_metadata(text=None):
@@ -21,4 +21,8 @@ def load_table_metadata(text=None):
         unknown = set(fields) - FIELDS
         if unknown:
             raise ValueError(f"Unknown field(s) for {table} in table metadata: {sorted(unknown)}")
+        if "sort_key" in fields and fields.get("sort_key") == fields.get("primary_key"):
+            raise ValueError(
+                f"{table}: sort_key and primary_key are the same column, use primary_key only"
+            )
     return tables
