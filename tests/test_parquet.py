@@ -199,7 +199,11 @@ def test_check_failure_writes_nothing(tmp_path, monkeypatch):
     runner = CliRunner()
     args = ["parquet", AIRPORTS_TABLE, "--query", TERRACE_QUERY, "-o", str(out)]
     result = runner.invoke(cli, args)
-    assert isinstance(result.exception, DownloadCheckError)
+    # reported as a one line error, not a traceback
+    assert result.exit_code == 1
+    assert result.output.startswith("Error: ")
+    assert "expected 2 features, downloaded 1" in result.output
+    assert "Traceback" not in result.output
     result = runner.invoke(cli, args + ["--no-check"])
     assert result.exit_code == 0, result.output
     assert len(gpd.read_parquet(out)) == 1

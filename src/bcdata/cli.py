@@ -354,17 +354,21 @@ def parquet(
     """
     verbosity = verbose - quiet
     configure_logging(verbosity)
-    bcdata.to_parquet(
-        dataset,
-        out_path=out_path,
-        query=query,
-        bounds=bounds,
-        bounds_crs=bounds_crs,
-        count=count,
-        sortby=sortby,
-        row_group_size=row_group_size,
-        check=not no_check,
-    )
+    try:
+        bcdata.to_parquet(
+            dataset,
+            out_path=out_path,
+            query=query,
+            bounds=bounds,
+            bounds_crs=bounds_crs,
+            count=count,
+            sortby=sortby,
+            row_group_size=row_group_size,
+            check=not no_check,
+        )
+    except bcdata.parquet.DownloadCheckError as e:
+        # an expected outcome (eg source edited during download), not a crash
+        raise click.ClickException(str(e)) from e
 
 
 @cli.command()
