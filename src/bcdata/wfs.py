@@ -130,7 +130,7 @@ class BCWFS:
             countdefault.find("ows:DefaultValue", {"ows": "http://www.opengis.net/ows/1.1"}).text
         )
 
-        self.request_headers = {"User-Agent": "bcdata.py ({bcdata.__version__})"}
+        self.request_headers = {"User-Agent": f"bcdata.py ({bcdata.__version__})"}
 
     def check_cached_file(self, cache_file):
         """Return true if the file is empty / does not exist / is more than n days old"""
@@ -248,7 +248,7 @@ class BCWFS:
             b0, b1, b2, b3 = [str(b) for b in bounds]
             bnd_query = f"bbox({geom_column}, {b0}, {b1}, {b2}, {b3}, '{bounds_crs}')"
             if query:
-                cql_filter = query + " AND " + bnd_query
+                cql_filter = f"({query}) AND {bnd_query}"
             else:
                 cql_filter = bnd_query
         return cql_filter
@@ -441,7 +441,7 @@ class BCWFS:
             if promote_to_multi:
                 gdf = promote_gdf_to_multi(gdf)
         else:
-            gdf = gpd.GeoDataFrame()
+            gdf = gpd.GeoDataFrame(geometry=[])
 
         if as_gdf:
             return gdf
@@ -478,8 +478,11 @@ def get_data(
                 url, as_gdf=True, lowercase=lowercase, promote_to_multi=promote_to_multi
             )
         )
+    # drop empty pages so they do not affect concatenated dtypes
+    results = [r for r in results if len(r) > 0]
     if len(results) > 1:
-        gdf = pd.concat(results)
+        # reset index so feature ids are unique across pages
+        gdf = pd.concat(results, ignore_index=True)
     elif len(results) == 1:
         gdf = results[0]
     # generally all datasets should have records, but handle the case of zero results
