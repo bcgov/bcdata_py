@@ -14,14 +14,14 @@ def load_table_metadata(text=None):
     """
     if text is None:
         text = files("bcdata").joinpath("tables.toml").read_text(encoding="utf-8")
-    tables = tomllib.loads(text).get("tables", {})
+    tables = tomllib.loads(text)
     for table, fields in tables.items():
         if table != table.lower():
             raise ValueError(f"Table names in table metadata must be lowercase: {table}")
         if not isinstance(fields, dict):
             # a malformed data file, reported like every other metadata error
             raise ValueError(  # noqa: TRY004
-                f'Table metadata for {table} must be a table of fields, eg [tables."{table}"]'
+                f'Table metadata for {table} must be a table of fields, eg ["{table}"]'
             )
         unknown = set(fields) - FIELDS
         if unknown:

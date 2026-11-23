@@ -13,22 +13,23 @@ def test_bundled_metadata_loads():
 
 
 def test_load_minimal():
-    tables = load_table_metadata('[tables."a.b"]\nprimary_key = "id"\n')
+    tables = load_table_metadata('["a.b"]\nprimary_key = "id"\n')
     assert tables == {"a.b": {"primary_key": "id"}}
 
 
 @pytest.mark.parametrize(
     "text, message",
     [
-        ('[tables."a.b"]\nprimay_key = "id"\n', "Unknown field"),
-        ('[tables."A.B"]\nprimary_key = "id"\n', "lowercase"),
-        ('[tables."a.b"]\nprimary_key = "id"\nsort_key = "id"\n', "same column"),
-        ('[tables."a.b"]\nprimary_key = "ID"\n', "lowercase"),
-        ('[tables."a.b"]\nsort_key = "Id"\n', "lowercase"),
-        ('[tables."a.b"]\nbcdc_object_name = "A.B_SP"\n', "lowercase"),
-        ('[tables."a.b"]\nprimary_key = 5\n', "non-empty string"),
-        ('[tables."a.b"]\nprimary_key = ""\n', "non-empty string"),
-        ('[tables]\n"a.b" = "id"\n', "table of fields"),
+        ('["a.b"]\nprimay_key = "id"\n', "Unknown field"),
+        ('["A.B"]\nprimary_key = "id"\n', "lowercase"),
+        ('["a.b"]\nprimary_key = "id"\nsort_key = "id"\n', "same column"),
+        ('["a.b"]\nprimary_key = "ID"\n', "lowercase"),
+        ('["a.b"]\nsort_key = "Id"\n', "lowercase"),
+        ('["a.b"]\nbcdc_object_name = "A.B_SP"\n', "lowercase"),
+        ('["a.b"]\nprimary_key = 5\n', "non-empty string"),
+        ('["a.b"]\nprimary_key = ""\n', "non-empty string"),
+        ('"a.b" = "id"\n', "table of fields"),
+        ('["a.b"]\nprimary_key = "id"\n["a.b"]\nsort_key = "x"\n', "twice"),
     ],
 )
 def test_load_invalid(text, message):
