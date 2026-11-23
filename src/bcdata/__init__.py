@@ -1,5 +1,4 @@
-import requests
-
+from ._tables import load_table_metadata
 from ._version import __version__ as __version__
 from .bc2pg import bc2pg as bc2pg
 from .bcdc import get_table_definition as get_table_definition
@@ -10,14 +9,11 @@ from .wfs import get_sortkey as get_sortkey
 from .wfs import list_tables as list_tables
 from .wfs import validate_name as validate_name
 
-PRIMARY_KEY_DB_URL = "https://raw.githubusercontent.com/smnorris/bcdata/main/data/primary_keys.json"
-
-# BCDC does not indicate which column in the schema is the primary key.
-# In this absence, bcdata maintains its own dictionary of {table: primary_key},
-# served via github. Retrieve the dict with this function"""
-response = requests.get(PRIMARY_KEY_DB_URL)
-if response.status_code == 200:
-    primary_keys = response.json()
-else:
-    raise ConnectionError(f"Failed to download primary key database at {PRIMARY_KEY_DB_URL}")
-    primary_keys = {}
+# BCDC does not indicate which column in a table is the primary key (and has a few
+# other gaps/quirks), so bcdata bundles its own table metadata - see tables.toml
+table_metadata = load_table_metadata()
+primary_keys = {
+    table: fields["primary_key"]
+    for table, fields in table_metadata.items()
+    if "primary_key" in fields
+}
