@@ -23,23 +23,20 @@ classifiers = [
 ]
 dependencies = [
     "click",
+    "duckdb>=1.1",
     "geoalchemy2",
+    "geoarrow-pyarrow",
     "geopandas",
     "owslib",
     "psycopg[binary]",
+    "pyarrow>=21",
     "requests",
     "sqlalchemy",
     "stamina"
 ]
 
 [project.optional-dependencies]
-parquet = [
-  "duckdb>=1.1",
-  "geoarrow-pyarrow",
-  "pyarrow>=21"
-]
 test = [
-  "bcdata[parquet]",
   "pytest",
   "pytest-rerunfailures",
   "pre-commit",

@@ -40,7 +40,12 @@ import shutil
 import tempfile
 from datetime import UTC, date, datetime
 
+import duckdb
+import geoarrow.pyarrow as ga
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pyproj
 import shapely
 from geopandas import GeoSeries
 
@@ -82,20 +87,6 @@ SKIP_TYPES = ["hexBinary", "base64Binary"]
 
 class DownloadCheckError(RuntimeError):
     """The downloaded features failed a consistency check (missing/duplicated features)"""
-
-
-def _import_deps():
-    try:
-        import duckdb
-        import geoarrow.pyarrow as ga
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except ImportError as e:
-        raise ImportError(
-            "Writing parquet requires optional dependencies, install with: "
-            "pip install bcdata[parquet]"
-        ) from e
-    return duckdb, ga, pa, pq
 
 
 def _quote(name):
@@ -149,8 +140,7 @@ def _hilbert_keys(geoms, present):
 class _Columns:
     """Map WFS schema properties to staging column types and track integer-ness"""
 
-    def __init__(self, pa, wfs_schema, lowercase):
-        self.pa = pa
+    def __init__(self, wfs_schema, lowercase):
         self.source = []  # WFS property names, in schema order
         self.types = {}  # WFS property name -> WFS type
         for name, wfs_type in wfs_schema["properties"].items():
@@ -172,15 +162,14 @@ class _Columns:
     def arrow_type(self, name):
         wfs_type = self.types[name]
         if wfs_type == "decimal":
-            return self.pa.float64()
+            return pa.float64()
         if wfs_type == "date":
-            return self.pa.date32()
+            return pa.date32()
         if wfs_type != "string":
             log.debug(f"Unrecognized WFS type {wfs_type} for {name}, writing as string")
-        return self.pa.string()
+        return pa.string()
 
     def staging_schema(self):
-        pa = self.pa
         fields = [pa.field(self.names[c], self.arrow_type(c)) for c in self.source]
         fields += [
             pa.field(GEOMETRY_COLUMN, pa.binary()),
@@ -194,7 +183,6 @@ class _Columns:
         return {self.names[c] for c in self.integral & self.has_values}
 
     def arrays(self, properties):
-        pa = self.pa
         arrays = []
         for c in self.source:
             values = [p.get(c) for p in properties]
@@ -235,8 +223,7 @@ class _ContentHasher:
     contents do not matter.
     """
 
-    def __init__(self, pa, schema_hash, fields):
-        self.pa = pa
+    def __init__(self, schema_hash, fields):
         self.schema_hash = schema_hash
         self.names = [f.name for f in fields]
         self.streams = {}
@@ -248,7 +235,6 @@ class _ContentHasher:
         self.streams[key].update(data)
 
     def update(self, table):
-        pa = self.pa
         for name in self.names:
             arr = table.column(name).combine_chunks()
             if isinstance(arr.type, pa.ExtensionType):
@@ -393,15 +379,13 @@ def to_parquet(
     """
     if row_group_size < 1:
         raise ValueError(f"row_group_size must be at least 1, got {row_group_size}")
-    duckdb, ga, pa, pq = _import_deps()
-    import pyproj
 
     WFS = BCWFS()
     table = WFS.validate_name(dataset)
     if not out_path:
         out_path = table.lower() + ".parquet"
     wfs_schema = WFS.get_schema(table)
-    columns = _Columns(pa, wfs_schema, lowercase)
+    columns = _Columns(wfs_schema, lowercase)
 
     # count expected features independently of how requests are paged
     n_expected = WFS.get_count(
@@ -522,7 +506,7 @@ def to_parquet(
                 }
             )
             provenance["schema_hash"] = _schema_hash(final_fields)
-            hasher = _ContentHasher(pa, provenance["schema_hash"], final_fields)
+            hasher = _ContentHasher(provenance["schema_hash"], final_fields)
 
             select = ", ".join(_quote(f.name) for f in final_fields)
             relation = con.sql(

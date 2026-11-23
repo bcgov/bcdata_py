@@ -23,10 +23,6 @@ Install with `pip`:
 
     $ pip install bcdata
 
-To write GeoParquet files (`bcdata parquet` / `bcdata.to_parquet`), install the optional `parquet` dependencies (duckdb, pyarrow, geoarrow-pyarrow):
-
-    $ pip install bcdata[parquet]
-
 Note that `bcdata` requires `gdal` to already be installed to a known location.
 If this is not the case on your system, the [GeoPandas guide](https://geopandas.org/en/stable/getting_started/install.html) is useful for setting up a stand alone environment with `conda`.
 

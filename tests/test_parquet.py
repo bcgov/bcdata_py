@@ -128,14 +128,13 @@ def test_no_features(tmp_path):
 
 def test_integer_inference():
     """integer columns need at least one value, and only whole numbers"""
-    import pyarrow as pa
 
     from bcdata.parquet import _Columns
 
     schema = {
         "properties": {"ID": "decimal", "MEASURE": "decimal", "EMPTY": "decimal", "NAME": "string"}
     }
-    columns = _Columns(pa, schema, lowercase=False)
+    columns = _Columns(schema, lowercase=False)
     columns.arrays(
         [
             {"ID": 1, "MEASURE": 2, "EMPTY": None, "NAME": "a"},
@@ -148,11 +147,10 @@ def test_integer_inference():
 
 def test_string_values_coerced():
     """non-string JSON values in a string column are written as strings"""
-    import pyarrow as pa
 
     from bcdata.parquet import _Columns
 
-    columns = _Columns(pa, {"properties": {"CODE": "string"}}, lowercase=False)
+    columns = _Columns({"properties": {"CODE": "string"}}, lowercase=False)
     (arr,) = columns.arrays([{"CODE": "a"}, {"CODE": 5}, {"CODE": None}, {"CODE": True}])
     assert arr.to_pylist() == ["a", "5", None, "true"]
 
@@ -240,11 +238,10 @@ def _hash_table():
 
 
 def _content_hash(chunks, schema):
-    import pyarrow as pa
 
     from bcdata.parquet import _ContentHasher, _schema_hash
 
-    hasher = _ContentHasher(pa, _schema_hash(schema), list(schema))
+    hasher = _ContentHasher(_schema_hash(schema), list(schema))
     for chunk in chunks:
         hasher.update(chunk)
     return hasher.hexdigest()

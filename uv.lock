@@ -18,27 +18,22 @@ name = "bcdata"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "duckdb" },
     { name = "geoalchemy2" },
+    { name = "geoarrow-pyarrow" },
     { name = "geopandas" },
     { name = "owslib", version = "0.35.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "owslib", version = "0.36.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "pyarrow" },
     { name = "requests" },
     { name = "sqlalchemy" },
     { name = "stamina" },
 ]
 
 [package.optional-dependencies]
-parquet = [
-    { name = "duckdb" },
-    { name = "geoarrow-pyarrow" },
-    { name = "pyarrow" },
-]
 test = [
-    { name = "duckdb" },
-    { name = "geoarrow-pyarrow" },
     { name = "pre-commit" },
-    { name = "pyarrow" },
     { name = "pytest" },
     { name = "pytest-rerunfailures" },
     { name = "requests-mock" },
@@ -46,16 +41,15 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bcdata", extras = ["parquet"], marker = "extra == 'test'" },
     { name = "click" },
-    { name = "duckdb", marker = "extra == 'parquet'", specifier = ">=1.1" },
+    { name = "duckdb", specifier = ">=1.1" },
     { name = "geoalchemy2" },
-    { name = "geoarrow-pyarrow", marker = "extra == 'parquet'" },
+    { name = "geoarrow-pyarrow" },
     { name = "geopandas" },
     { name = "owslib" },
     { name = "pre-commit", marker = "extra == 'test'" },
     { name = "psycopg", extras = ["binary"] },
-    { name = "pyarrow", marker = "extra == 'parquet'", specifier = ">=21" },
+    { name = "pyarrow", specifier = ">=21" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "pytest-rerunfailures", marker = "extra == 'test'" },
     { name = "requests" },
@@ -63,7 +57,7 @@ requires-dist = [
     { name = "sqlalchemy" },
     { name = "stamina" },
 ]
-provides-extras = ["parquet", "test"]
+provides-extras = ["test"]
 
 [[package]]
 name = "certifi"
