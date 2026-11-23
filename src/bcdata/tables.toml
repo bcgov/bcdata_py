@@ -89,6 +89,10 @@ primary_key = "hydrometric_station_id"
 # refreshed: fine for paging one download, never as a persistent identifier
 sort_key = "fish_observation_point_id"
 
+["whse_fish.fiss_lake_surveys_svw"]
+# objectid is not unique in this view, so paging by it can repeat or skip records
+sort_key = "lake_survey_id"
+
 ["whse_fish.fiss_stream_sample_sites_sp"]
 primary_key = "stream_sample_site_id"
 
@@ -115,9 +119,6 @@ primary_key = "rmf_skey"
 
 ["whse_forest_vegetation.ogsr_priority_def_area_cur_sp"]
 primary_key = "ogsr_pdac_sysid"
-
-["whse_forest_vegetation.rec_visual_landscape_inventory"]
-primary_key = "vli_polygon_no"
 
 ["whse_forest_vegetation.veg_comp_lyr_r1_poly"]
 primary_key = "feature_id"
