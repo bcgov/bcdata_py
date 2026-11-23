@@ -18,8 +18,20 @@ Writing is done in two passes so memory use stays bounded for large layers:
 Output order is deterministic: ties on the Hilbert key are broken by the order
 features were received from WFS (which is sorted by primary key for paged
 requests).
+
+The "bcdata" metadata records two hashes, so a fresh download can be compared
+with an earlier file by reading only the file footers:
+
+- schema_hash: column names and types
+- content_hash: the schema plus every value of every row, in output order
+
+Both depend only on the data, not on how the file is encoded (row group size,
+compression, library versions) or on other metadata such as the download time.
+The "bcdata" metadata is added to the file footer once every row is written, so
+read it with pyarrow.parquet.read_metadata (not read_schema).
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -200,6 +212,78 @@ class _Columns:
                 values = [v if v is None or isinstance(v, str) else json.dumps(v) for v in values]
             arrays.append(pa.array(values, type=self.arrow_type(c)))
         return arrays
+
+
+def _schema_hash(fields):
+    """sha256 of output column names and types"""
+    canonical = [
+        [f.name, f"geometry(wkb,EPSG:{SRID})" if f.name == GEOMETRY_COLUMN else str(f.type)]
+        for f in fields
+    ]
+    return "sha256:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
+
+
+class _ContentHasher:
+    """Hash every value of every column, independent of how rows are chunked.
+
+    Each column is reduced to canonical byte streams - validity (one byte per
+    row), then either fixed width values or variable width lengths and data -
+    and each stream is hashed incrementally, so the result is the same however
+    the rows are split into tables/row groups, and however arrow lays them out
+    in memory. Null slots are filled with a fixed value so their (undefined)
+    contents do not matter.
+    """
+
+    def __init__(self, pa, schema_hash, fields):
+        self.pa = pa
+        self.schema_hash = schema_hash
+        self.names = [f.name for f in fields]
+        self.streams = {}
+
+    def _update(self, name, kind, data):
+        key = (name, kind)
+        if key not in self.streams:
+            self.streams[key] = hashlib.sha256()
+        self.streams[key].update(data)
+
+    def update(self, table):
+        pa = self.pa
+        for name in self.names:
+            arr = table.column(name).combine_chunks()
+            if isinstance(arr.type, pa.ExtensionType):
+                arr = arr.storage
+            self._update(name, "valid", arr.is_valid().to_numpy(zero_copy_only=False).tobytes())
+            t = arr.type
+            if pa.types.is_string(t) or pa.types.is_large_string(t) or pa.types.is_string_view(t):
+                arr = arr.cast(pa.large_string()).fill_null("")
+            elif pa.types.is_binary(t) or pa.types.is_large_binary(t) or pa.types.is_binary_view(t):
+                arr = arr.cast(pa.large_binary()).fill_null(b"")
+            elif pa.types.is_date32(t):
+                arr = arr.cast(pa.int32()).fill_null(0)
+            elif pa.types.is_integer(t) or pa.types.is_floating(t):
+                arr = arr.fill_null(0)
+            else:
+                raise TypeError(f"Cannot hash column {name} of type {t}")
+            if pa.types.is_large_string(arr.type) or pa.types.is_large_binary(arr.type):
+                # variable width: hash lengths and the data they cover
+                buffers = arr.buffers()
+                offsets = np.frombuffer(buffers[1], dtype=np.int64)[
+                    arr.offset : arr.offset + len(arr) + 1
+                ]
+                self._update(name, "lengths", np.diff(offsets).tobytes())
+                if buffers[2] is not None and len(arr):
+                    self._update(name, "data", buffers[2].to_pybytes()[offsets[0] : offsets[-1]])
+            else:
+                self._update(name, "values", arr.to_numpy(zero_copy_only=False).tobytes())
+
+    def hexdigest(self):
+        h = hashlib.sha256(self.schema_hash.encode())
+        for name in self.names:
+            for kind in ("valid", "values", "lengths", "data"):
+                h.update(f"{name}:{kind}:".encode())
+                if (name, kind) in self.streams:
+                    h.update(self.streams[(name, kind)].digest())
+        return "sha256:" + h.hexdigest()
 
 
 def _geo_metadata(pyproj_crs_json, geometry_types, bbox):
@@ -425,10 +509,11 @@ def to_parquet(
                         _geo_metadata(
                             crs_json, geometry_types, [] if bbox is None else bbox.tolist()
                         )
-                    ),
-                    "bcdata": json.dumps(provenance),
+                    )
                 }
             )
+            provenance["schema_hash"] = _schema_hash(final_fields)
+            hasher = _ContentHasher(pa, provenance["schema_hash"], final_fields)
 
             select = ", ".join(_quote(f.name) for f in final_fields)
             relation = con.sql(
@@ -459,6 +544,11 @@ def to_parquet(
                 compression=compression,
                 compression_level=compression_level,
             ) as writer:
+
+                def write(table):
+                    hasher.update(table)
+                    writer.write_table(table)
+
                 # duckdb does not honour the requested batch size, accumulate
                 # batches so that each write is one full row group
                 pending, pending_rows = [], 0
@@ -468,11 +558,15 @@ def to_parquet(
                     if pending_rows >= row_group_size:
                         chunk = pa.concat_tables(pending).combine_chunks()
                         while chunk.num_rows >= row_group_size:
-                            writer.write_table(chunk.slice(0, row_group_size))
+                            write(chunk.slice(0, row_group_size))
                             chunk = chunk.slice(row_group_size)
                         pending, pending_rows = [chunk], chunk.num_rows
                 if pending_rows:
-                    writer.write_table(pa.concat_tables(pending).combine_chunks())
+                    write(pa.concat_tables(pending).combine_chunks())
+                # provenance includes the content hash, so it is only known once every
+                # row is written - add it to the file footer rather than the schema
+                provenance["content_hash"] = hasher.hexdigest()
+                writer.add_key_value_metadata({"bcdata": json.dumps(provenance)})
 
         _write_output(final_path, out_path)
     log.info(f"Wrote {n_features} features to {out_path}")

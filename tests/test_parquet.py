@@ -202,3 +202,99 @@ def test_check_failure_writes_nothing(tmp_path, monkeypatch):
     result = runner.invoke(cli, args + ["--no-check"])
     assert result.exit_code == 0, result.output
     assert len(gpd.read_parquet(out)) == 1
+
+
+# --- schema and content hashes ---
+
+
+def _hash_table():
+    import geoarrow.pyarrow as ga
+    import pyarrow as pa
+
+    from bcdata.parquet import GEOMETRY_COLUMN
+
+    geom = ga.wkb()
+    n = 300
+    schema = pa.schema(
+        [
+            pa.field("ID", pa.int64()),
+            pa.field("NAME", pa.string()),
+            pa.field("UPDATED", pa.date32()),
+            pa.field("AREA", pa.float64()),
+            pa.field(GEOMETRY_COLUMN, geom),
+        ]
+    )
+    table = pa.Table.from_arrays(
+        [
+            pa.array(range(n), pa.int64()),
+            pa.array([None if i % 7 == 0 else f"name {i}" for i in range(n)]),
+            pa.array([None if i % 5 == 0 else i for i in range(n)], pa.int32()).cast(pa.date32()),
+            pa.array([i / 3 if i % 11 else None for i in range(n)]),
+            pa.ExtensionArray.from_storage(
+                geom, pa.array([bytes([i % 256]) * (i % 13) for i in range(n)], pa.binary())
+            ),
+        ],
+        schema=schema,
+    )
+    return pa, schema, table
+
+
+def _content_hash(chunks, schema):
+    import pyarrow as pa
+
+    from bcdata.parquet import _ContentHasher, _schema_hash
+
+    hasher = _ContentHasher(pa, _schema_hash(schema), list(schema))
+    for chunk in chunks:
+        hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def test_content_hash_independent_of_chunking():
+    _, schema, table = _hash_table()
+    whole = _content_hash([table], schema)
+    assert whole.startswith("sha256:")
+    assert whole == _content_hash(
+        [table.slice(0, 100), table.slice(100, 77), table.slice(177)], schema
+    )
+    assert whole == _content_hash([table.slice(i, 1) for i in range(len(table))], schema)
+
+
+def test_content_hash_detects_changes():
+    pa, schema, table = _hash_table()
+    whole = _content_hash([table], schema)
+    names = table.column("NAME").to_pylist()
+    # null and empty string are different values
+    empty = table.set_column(1, "NAME", pa.array(["" if v is None else v for v in names]))
+    assert _content_hash([empty], schema) != whole
+    # one changed value
+    areas = table.column("AREA").to_pylist()
+    areas[150] = 1.0
+    assert _content_hash([table.set_column(3, "AREA", pa.array(areas))], schema) != whole
+    # same rows in a different order
+    assert _content_hash([table.take(list(range(len(table)))[::-1])], schema) != whole
+
+
+def test_schema_hash():
+    import pyarrow as pa
+
+    from bcdata.parquet import _schema_hash
+
+    _, schema, _ = _hash_table()
+    assert _schema_hash(schema) == _schema_hash(pa.schema(list(schema)))
+    assert _schema_hash(schema) != _schema_hash(
+        pa.schema([pa.field("ID", pa.float64())] + list(schema)[1:])
+    )
+    assert _schema_hash(schema) != _schema_hash(pa.schema(list(schema)[:-2] + list(schema)[-1:]))
+
+
+def test_hashes_in_metadata(airports, tmp_path):
+    # live: hashes are recorded, and do not depend on how the file is encoded
+    meta = json.loads(pq.read_metadata(airports).metadata[b"bcdata"])
+    out = tmp_path / "airports_again.parquet"
+    bcdata.to_parquet(AIRPORTS_PACKAGE, str(out), row_group_size=50, compression="snappy")
+    again = json.loads(pq.read_metadata(out).metadata[b"bcdata"])
+    assert meta["schema_hash"].startswith("sha256:")
+    assert again["schema_hash"] == meta["schema_hash"]
+    assert again["content_hash"] == meta["content_hash"]
+    assert pq.read_metadata(out).num_row_groups > pq.read_metadata(airports).num_row_groups
