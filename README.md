@@ -180,8 +180,9 @@ Usage: bcdata dump [OPTIONS] DATASET
     $ bcdata dump bc-airports --query "AIRPORT_NAME='Victoria Harbour (Shoal Point) Heliport'"
     $ bcdata dump bc-airports --bounds xmin ymin xmax ymax
 
-   It can also be combined to read bounds of a feature dataset using Fiona: 
-   $ bcdata dump bc-airports --bounds $(fio info aoi.shp --bounds)
+  It can also be combined to read bounds of a feature dataset using Fiona:
+
+    $ bcdata dump bc-airports --bounds $(fio info aoi.shp --bounds)
 
 Options:
   --query TEXT                    A valid CQL or ECQL query
