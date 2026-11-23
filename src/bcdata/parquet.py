@@ -26,8 +26,10 @@ with an earlier file by reading only the file footers:
 - schema_hash: column names and types
 - content_hash: the schema plus every value of every row, in output order
 
-Both depend only on the data, not on how the file is encoded (row group size,
-compression, library versions) or on other metadata such as the download time.
+Both depend only on the data, not on how the file is written (row group size,
+compression, arrow memory layout) or on other metadata such as the download time.
+Geometries are hashed as the WKB shapely produces, so an upgrade that changed WKB
+output would change every content_hash once.
 The "bcdata" metadata is added to the file footer once every row is written, so
 read it with pyarrow.parquet.read_metadata (not read_schema).
 """
@@ -158,6 +160,9 @@ class _Columns:
         # ...and at least one value has been seen (with no values, nothing
         # supports an integer type - eg an empty layer - so stay float64)
         self.has_values = set()
+        # numeric columns holding whole numbers too large for float64 to represent
+        # exactly (>= 2**53) - these are written as float64, so values are rounded
+        self.large_integers = set()
 
     def arrow_type(self, name):
         wfs_type = self.types[name]
@@ -190,6 +195,11 @@ class _Columns:
             if wfs_type == "decimal":
                 if c not in self.has_values and any(v is not None for v in values):
                     self.has_values.add(c)
+                if c not in self.large_integers and any(
+                    isinstance(v, int) and not isinstance(v, bool) and abs(v) >= 2**53
+                    for v in values
+                ):
+                    self.large_integers.add(c)
                 if c in self.integral and not all(
                     v is None or (isinstance(v, int) and abs(v) < 2**53) for v in values
                 ):
@@ -259,7 +269,7 @@ class _ContentHasher:
                 ]
                 self._update(name, "lengths", np.diff(offsets).tobytes())
                 if buffers[2] is not None and len(arr):
-                    self._update(name, "data", buffers[2].to_pybytes()[offsets[0] : offsets[-1]])
+                    self._update(name, "data", memoryview(buffers[2])[offsets[0] : offsets[-1]])
             else:
                 self._update(name, "values", arr.to_numpy(zero_copy_only=False).tobytes())
 
@@ -274,17 +284,19 @@ class _ContentHasher:
 
 
 def _geo_metadata(pyproj_crs_json, geometry_types, bbox):
+    column = {
+        "encoding": "WKB",
+        "crs": pyproj_crs_json,
+        "geometry_types": sorted(geometry_types),
+    }
+    # bbox is optional, but must have 4 (or 6) values when present - omit it
+    # when there are no geometries (eg an empty layer)
+    if bbox is not None:
+        column["bbox"] = list(bbox)
     return {
         "version": GEOPARQUET_VERSION,
         "primary_column": GEOMETRY_COLUMN,
-        "columns": {
-            GEOMETRY_COLUMN: {
-                "encoding": "WKB",
-                "crs": pyproj_crs_json,
-                "geometry_types": sorted(geometry_types),
-                "bbox": bbox,
-            }
-        },
+        "columns": {GEOMETRY_COLUMN: column},
         "creator": {"library": "bcdata", "version": bcdata.__version__},
     }
 
@@ -320,8 +332,10 @@ def _write_output(local_path, out_path):
         from pyarrow import fs
 
         filesystem, path = fs.FileSystem.from_uri(out_path)
+        # object stores (s3 etc) have no directories to create - and creating the
+        # "parent" of a top level key would be an attempt to create a bucket
         parent = path.rsplit("/", 1)[0] if "/" in path else ""
-        if parent:
+        if parent and filesystem.type_name == "local":
             filesystem.create_dir(parent, recursive=True)
         fs.copy_files(local_path, path, destination_filesystem=filesystem)
     else:
@@ -332,6 +346,11 @@ def _write_output(local_path, out_path):
         os.close(fd)
         try:
             shutil.copyfile(local_path, tmp)
+            # mkstemp creates files readable only by their owner - give the output
+            # the permissions a normally created file would have (0666 less umask)
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(tmp, 0o666 & ~umask)
             os.replace(tmp, out_path)
         except BaseException:
             if os.path.exists(tmp):
@@ -395,7 +414,7 @@ def to_parquet(
         bounds_crs=bounds_crs,
         geom_column=wfs_schema["geometry_column"],
     )
-    if count:
+    if count is not None:
         n_expected = min(count, n_expected)
 
     # define_requests only sorts downloads that need several requests. Sort single
@@ -404,8 +423,16 @@ def to_parquet(
     # content_hash, although the data has not changed.
     if not sortby:
         sortby = WFS.get_sortkey(table)
+    # pass the count requested above, so it is not requested again (and the requests
+    # and the check use the same number)
     urls = WFS.define_requests(
-        table, query=query, bounds=bounds, bounds_crs=bounds_crs, count=count, sortby=sortby
+        table,
+        query=query,
+        bounds=bounds,
+        bounds_crs=bounds_crs,
+        count=n_expected,
+        sortby=sortby,
+        check_count=False,
     )
 
     # catalogue metadata is nice to have, do not fail the download without it
@@ -451,6 +478,12 @@ def to_parquet(
                 writer.write_batch(pa.RecordBatch.from_arrays(arrays, schema=staging_schema))
                 n_features += len(features)
         log.info(f"Downloaded {n_features} features from {table}")
+        if columns.large_integers:
+            log.warning(
+                f"{table}: column(s) {sorted(columns.names[c] for c in columns.large_integers)} "
+                "hold whole numbers of 2**53 or more, which are written as float64 and so "
+                "are rounded"
+            )
 
         with duckdb.connect(config={"temp_directory": os.path.join(tmpdir, "duckdb")}) as con:
             if check:
@@ -500,7 +533,7 @@ def to_parquet(
                 {
                     "geo": json.dumps(
                         _geo_metadata(
-                            crs_json, geometry_types, [] if bbox is None else bbox.tolist()
+                            crs_json, geometry_types, None if bbox is None else bbox.tolist()
                         )
                     )
                 }

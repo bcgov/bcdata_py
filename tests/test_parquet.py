@@ -109,6 +109,8 @@ def test_no_features(tmp_path):
     assert md.num_rows == 0
     geo = json.loads(md.metadata[b"geo"])
     assert geo["columns"]["geometry"]["geometry_types"] == []
+    # bbox must have 4 values if present, so it is omitted when there are no geometries
+    assert "bbox" not in geo["columns"]["geometry"]
     meta = json.loads(md.metadata[b"bcdata"])
     assert meta["feature_count"] == 0
     assert meta["integer_columns_inferred"] == []
@@ -313,3 +315,66 @@ def test_single_request_is_sorted(tmp_path, monkeypatch):
     bcdata.to_parquet(AIRPORTS_TABLE, str(tmp_path / "airports.parquet"))
     assert len(urls) == 1
     assert "sortby=" in urls[0]
+
+
+def test_count_zero(tmp_path):
+    # live: count=0 is a request for no features, not a failed download
+    out = tmp_path / "zero.parquet"
+    bcdata.to_parquet(AIRPORTS_TABLE, str(out), count=0)
+    assert pq.read_metadata(out).num_rows == 0
+
+
+def test_output_permissions(tmp_path):
+    # the output gets the permissions of a normally created file, not mkstemp's 0600
+    import os
+    import stat
+
+    from bcdata.parquet import _write_output
+
+    src = tmp_path / "src.parquet"
+    src.write_bytes(b"x")
+    out = tmp_path / "sub" / "out.parquet"
+    _write_output(str(src), str(out))
+    umask = os.umask(0)
+    os.umask(umask)
+    assert stat.S_IMODE(os.stat(out).st_mode) == 0o666 & ~umask
+    assert out.read_bytes() == b"x"
+
+
+def test_object_store_output_creates_no_directories(tmp_path, monkeypatch):
+    from pyarrow import fs
+
+    from bcdata.parquet import _write_output
+
+    class FakeS3:
+        type_name = "s3"
+
+        def create_dir(self, *args, **kwargs):
+            raise AssertionError("create_dir should not be called for object stores")
+
+    copied = {}
+
+    class FakeFileSystem:
+        @staticmethod
+        def from_uri(uri):
+            return FakeS3(), uri.split("://")[1]
+
+    monkeypatch.setattr(fs, "FileSystem", FakeFileSystem)
+    monkeypatch.setattr(
+        fs, "copy_files", lambda src, dst, destination_filesystem: copied.update(dst=dst)
+    )
+    src = tmp_path / "src.parquet"
+    src.write_bytes(b"x")
+    _write_output(str(src), "s3://bucket/top_level.parquet")
+    _write_output(str(src), "s3://bucket/a/b/nested.parquet")
+    assert copied["dst"] == "bucket/a/b/nested.parquet"
+
+
+def test_large_integers_tracked():
+    """whole numbers of 2**53 or more cannot be held exactly in float64"""
+    from bcdata.parquet import _Columns
+
+    columns = _Columns({"properties": {"BIG": "decimal", "SMALL": "decimal"}}, lowercase=False)
+    columns.arrays([{"BIG": 2**53, "SMALL": 1}, {"BIG": 5, "SMALL": True}])
+    assert columns.large_integers == {"BIG"}
+    assert "BIG" not in columns.integer_columns()
