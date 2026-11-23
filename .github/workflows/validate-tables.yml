@@ -76,8 +76,16 @@ jobs:
           if [ -z "$number" ]; then
             gh issue create --title "$ISSUE_TITLE" --body-file report.md
           else
+            # An issue is already open. Compare its description (the problems reported
+            # by an earlier run) with this run's report. If they differ (a problem was
+            # added, fixed, or changed), replace the description with this run's report
+            # and comment so anyone watching the issue is notified. If they are the
+            # same, do nothing, so an unfixed problem doesn't cause a comment every week.
+            # The sed strips trailing whitespace from each line before comparing, because
+            # issue text can come back from GitHub with Windows line endings (\r\n), eg
+            # after an edit in the web interface, which would otherwise make identical
+            # reports look different.
             gh issue view "$number" --json body --jq .body > current.md
-            # only notify when the list of problems has changed
             if ! diff -q <(sed 's/[[:space:]]*$//' current.md) <(sed 's/[[:space:]]*$//' report.md) > /dev/null; then
               gh issue edit "$number" --body-file report.md
               gh issue comment "$number" --body "The problems found have changed, see the updated description ($RUN_URL)."

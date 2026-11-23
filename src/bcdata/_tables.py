@@ -1,4 +1,4 @@
-"""Load the table metadata file bundled with bcdata (tables.toml)."""
+"""Load the table metadata file"""
 
 import tomllib
 from importlib.resources import files
