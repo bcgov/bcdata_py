@@ -39,9 +39,7 @@ def _check_response(r):
 
 @stamina.retry(on=_is_retryable, attempts=5, timeout=300)
 def _package_show(package):
-    r = requests.get(
-        BCDC_API_URL + "package_show", params={"id": package}, timeout=REQUEST_TIMEOUT
-    )
+    r = requests.get(BCDC_API_URL + "package_show", params={"id": package}, timeout=REQUEST_TIMEOUT)
     if r.status_code in [400, 404]:
         raise ValueError(f"Dataset {package} not found in DataBC API list")
     return _check_response(r)
