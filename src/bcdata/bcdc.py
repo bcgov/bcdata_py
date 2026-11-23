@@ -65,6 +65,8 @@ def get_table_name(package):
                 package, "\n".join(layer_names)
             )
         )
+    if not layer_names:
+        raise ValueError(f"Package {package} has no WMS resource, cannot determine WFS table name")
     return layer_names[0]
 
 
