@@ -23,6 +23,10 @@ Install with `pip`:
 
     $ pip install bcdata
 
+To write GeoParquet files (`bcdata parquet` / `bcdata.to_parquet`), install the optional `parquet` dependencies (duckdb, pyarrow, geoarrow-pyarrow):
+
+    $ pip install bcdata[parquet]
+
 Note that `bcdata` requires `gdal` to already be installed to a known location.
 If this is not the case on your system, the [GeoPandas guide](https://geopandas.org/en/stable/getting_started/install.html) is useful for setting up a stand alone environment with `conda`.
 
@@ -97,11 +101,12 @@ Options:
   --help     Show this message and exit.
 
 Commands:
-  bc2pg  Load a DataBC WFS layer to a postgres db
-  cat    Write DataBC features to stdout as GeoJSON feature objects.
-  dump   Write DataBC features to stdout as GeoJSON feature collection.
-  info   Print basic metadata about a DataBC WFS layer as JSON.
-  list   List DataBC layers available via WFS
+  bc2pg    Load a DataBC WFS layer to a postgres db
+  cat      Write DataBC features to stdout as GeoJSON feature objects.
+  dump     Write DataBC features to stdout as GeoJSON feature collection.
+  info     Print basic metadata about a DataBC WFS layer as JSON.
+  list     List DataBC layers available via WFS
+  parquet  Write DataBC features to a GeoParquet 2.0 file.
 ```
 
 #### bc2pg
@@ -179,7 +184,7 @@ Usage: bcdata dump [OPTIONS] DATASET
     $ bcdata dump bc-airports --query "AIRPORT_NAME='Victoria Harbour (Shoal Point) Heliport'"
     $ bcdata dump bc-airports --bounds xmin ymin xmax ymax
 
-   It can also be combined to read bounds of a feature dataset using Fiona: 
+   It can also be combined to read bounds of a feature dataset using Fiona: 
    $ bcdata dump bc-airports --bounds $(fio info aoi.shp --bounds)
 
 Options:
@@ -231,6 +236,49 @@ Usage: bcdata list [OPTIONS]
 Options:
   -r, --refresh  Refresh the cached list
   --help         Show this message and exit.
+```
+
+#### parquet
+
+```
+$ bcdata parquet --help
+
+Usage: bcdata parquet [OPTIONS] DATASET
+
+  Write DataBC features to a GeoParquet 2.0 file.
+
+    $ bcdata parquet bc-airports
+    $ bcdata parquet bc-airports -o s3://my-bucket/airports.parquet
+
+  Features are spatially sorted (Hilbert curve) and geometries are stored in
+  BC Albers using the native Parquet GEOMETRY type, with GeoParquet metadata.
+
+  The download is checked before writing: if the number of features received
+  differs from the WFS count, or the primary key has duplicates, nothing is
+  written and the command fails.
+
+Options:
+  -o, --out TEXT                  Output path or URI (eg
+                                  s3://bucket/key.parquet). Defaults to
+                                  <object_name>.parquet
+  --query TEXT                    A valid CQL or ECQL query
+  -c, --count INTEGER             Number of features to request
+  --bounds TEXT                   Bounds: "left bottom right top" or "[left,
+                                  bottom, right, top]". Coordinates are BC
+                                  Albers (default) or --bounds_crs
+  --bounds-crs, --bounds_crs TEXT
+                                  CRS of provided bounds
+  -s, --sortby TEXT               Name of sort field (defaults to the table's
+                                  sort key)
+  -l, --lowercase                 Write column/properties names as lowercase
+  --row-group-size INTEGER RANGE  Maximum rows per parquet row group
+                                  [default: 50000; x>=1]
+  --no-check                      Write even if the download fails consistency
+                                  checks (feature count, duplicate primary
+                                  keys)
+  -v, --verbose                   Increase verbosity.
+  -q, --quiet                     Decrease verbosity.
+  --help                          Show this message and exit.
 ```
 
 #### CLI notes
