@@ -78,3 +78,52 @@ def test_get_table_definition_nr_districts():
     assert table_definition["description"]
     assert table_definition["comments"]
     assert table_definition["schema"]
+
+
+def _package(name, notes, resources):
+    return {"name": name, "notes": notes, "resources": resources}
+
+
+def _resource(object_name, details, comments=None):
+    resource = {"bcdc_type": "geographic", "object_name": object_name, "details": details}
+    if comments:
+        resource["object_table_comments"] = comments
+    return resource
+
+
+def _mock_search(monkeypatch, packages):
+    """Patch the BCDC package search to return the given packages (no network)"""
+
+    class Response:
+        def json(self):
+            return {"result": {"count": len(packages), "results": packages}}
+
+    monkeypatch.setattr(bcdata, "list_tables", lambda: [AIRPORTS_TABLE])
+    monkeypatch.setattr(bcdc, "_table_definition", lambda table_name: Response())
+
+
+def test_get_table_definition_multiple_packages(monkeypatch):
+    # description, schema and comments must all come from the first matching package,
+    # not from other packages returned by the search
+    schema = [{"column_name": "AIRPORT_NAME"}]
+    _mock_search(
+        monkeypatch,
+        [
+            _package("unrelated", "unrelated description", [_resource("OTHER.TABLE", [{}])]),
+            _package("airports", "airports description", [_resource(AIRPORTS_TABLE, schema, "c")]),
+            _package("later", "later description", [_resource(AIRPORTS_TABLE, [{}], "other")]),
+        ],
+    )
+    table_definition = bcdc.get_table_definition(AIRPORTS_TABLE)
+    assert table_definition["description"] == "airports description"
+    assert table_definition["schema"] == schema
+    assert table_definition["comments"] == "c"
+
+
+def test_get_table_definition_no_schema_single_package(monkeypatch):
+    # a single package with no matching schema still provides its description
+    _mock_search(monkeypatch, [_package("airports", "airports description", [])])
+    table_definition = bcdc.get_table_definition(AIRPORTS_TABLE)
+    assert table_definition["description"] == "airports description"
+    assert table_definition["schema"] == []
+    assert table_definition["comments"] is None
