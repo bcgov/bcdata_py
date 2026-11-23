@@ -37,3 +37,8 @@ printf '#### list\n\n' >> cli.md
 printf '```\n$ bcdata list --help\n\n' >> cli.md
 bcdata list --help >> cli.md
 printf '```\n' >> cli.md
+printf '\n' >> cli.md
+printf '#### parquet\n\n' >> cli.md
+printf '```\n$ bcdata parquet --help\n\n' >> cli.md
+bcdata parquet --help >> cli.md
+printf '```\n' >> cli.md

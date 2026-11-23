@@ -23,10 +23,13 @@ classifiers = [
 ]
 dependencies = [
     "click",
+    "duckdb>=1.1",
     "geoalchemy2",
+    "geoarrow-pyarrow",
     "geopandas",
     "owslib",
     "psycopg[binary]",
+    "pyarrow>=21",
     "requests",
     "sqlalchemy",
     "stamina"
