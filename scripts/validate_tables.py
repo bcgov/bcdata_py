@@ -1,7 +1,7 @@
 """Validate the bundled table metadata (src/bcdata/tables.toml) against the live services.
 
 Checks that every table exists in the WFS, that each primary_key and sort_key column
-is present in the table schema, and that each bcdc_object_name lets the BC Data Catalogue
+is present in the WFS table schema, and that each bcdc_object_name lets the BC Data Catalogue
 search find the table's schema. Column values are not checked for uniqueness.
 
     python scripts/validate_tables.py
@@ -19,7 +19,8 @@ def main():
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format=LOG_FORMAT)
     log = logging.getLogger(__name__)
 
-    available = {t.lower() for t in bcdata.list_tables()}
+    WFS = bcdata.wfs.BCWFS()
+    available = {t.lower() for t in WFS.list_tables()}
     missing = sorted(set(bcdata.table_metadata) - available)
     for table in missing:
         log.error(f"Table not available via WFS: {table}")
@@ -28,9 +29,9 @@ def main():
     for table, fields in bcdata.table_metadata.items():
         if table in missing:
             continue
-        schema = bcdata.get_table_definition(table)["schema"]
-        columns = {c["column_name"].lower() for c in schema}
-        if "bcdc_object_name" in fields and not schema:
+        # check key columns against the WFS schema, which is what paged requests use
+        columns = {c.lower() for c in WFS.get_schema(table.upper())["properties"]}
+        if "bcdc_object_name" in fields and not bcdata.get_table_definition(table)["schema"]:
             log.error(f"{table}: no schema found via bcdc_object_name {fields['bcdc_object_name']}")
             errors += 1
         for key in ("primary_key", "sort_key"):
