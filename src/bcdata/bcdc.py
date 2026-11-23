@@ -79,6 +79,23 @@ def get_table_name(package):
     return layer_names[0]
 
 
+def _resource_matches(table_name, resource):
+    """Return True if resource is a geographic resource for table_name with a schema present"""
+    object_name = resource.get("object_name")
+    return (
+        resource.get("bcdc_type") == "geographic"
+        and (
+            table_name == object_name
+            # hack to handle object name / table name mismatch for NR Districts
+            or (
+                table_name == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SPG"
+                and object_name == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SP"
+            )
+        )
+        and bool(resource.get("details"))
+    )
+
+
 def get_table_definition(table_name):
     """
     Given a table/object name, search BCDC for the first package/resource with a matching "object_name",
@@ -100,37 +117,30 @@ def get_table_definition(table_name):
         "primary_key": None,
     }
 
+    results = r.json()["result"]["results"]
     # if there are no matching results, let the user know
-    if r.json()["result"]["count"] == 0:
+    if not results:
         log.warning(f"BC Data Catalogue API search provides no results for: {table_name}")
     else:
-        # iterate through results of search (packages)
-        for result in r.json()["result"]["results"]:
-            # description is at top level, same for all resources
-            table_definition["description"] = result["notes"]
-            # iterate through resources associated with each package
-            for resource in result["resources"]:
-                # only examine geographic resources with object name key
-                # confirm that object name matches table name and schema is present
-                if (
-                    "object_name" in resource
-                    and resource["bcdc_type"] == "geographic"
-                    and (
-                        table_name == resource["object_name"]
-                        # hack to handle object name / table name mismatch for NR Districts
-                        or (
-                            table_name == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SPG"
-                            and resource["object_name"]
-                            == "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SP"
-                        )
-                    )
-                    and "details" in resource
-                    and resource["details"] != []
-                ):
-                    table_definition["schema"] = resource["details"]
-                    # look for comments only if details/schema was found
-                    if "object_table_comments" in resource:
-                        table_definition["comments"] = resource["object_table_comments"]
+        # use the first package/resource matching the table, taking the description
+        # (package level), schema and comments (resource level) all from that match
+        match = next(
+            (
+                (package, resource)
+                for package in results
+                for resource in package["resources"]
+                if _resource_matches(table_name, resource)
+            ),
+            None,
+        )
+        if match:
+            package, resource = match
+            table_definition["description"] = package["notes"]
+            table_definition["schema"] = resource["details"]
+            table_definition["comments"] = resource.get("object_table_comments")
+        elif len(results) == 1:
+            # no schema found, but the description is unambiguous
+            table_definition["description"] = results[0]["notes"]
 
     if not table_definition["schema"]:
         log.warning(f"BC Data Catalouge API search provides no schema for: {table_name}")
