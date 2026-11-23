@@ -139,3 +139,11 @@ def test_bc2pg_refresh_fails_table_does_not_exist():
         ],
     )
     assert result.exit_code == 1
+
+
+def test_dump_bounds_wrong_length():
+    runner = CliRunner()
+    for bounds in ["1 2 3", "1 2 3 4 5"]:
+        result = runner.invoke(cli, ["dump", AIRPORTS_TABLE, "--bounds", bounds])
+        assert result.exit_code == 2
+        assert "not a valid bounding box" in result.output
