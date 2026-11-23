@@ -5,6 +5,7 @@ import requests
 import stamina
 
 import bcdata
+from bcdata.wfs import RETRYABLE_STATUS_CODES, _is_retryable
 
 log = logging.getLogger(__name__)
 
@@ -15,37 +16,45 @@ class ServiceException(Exception):
     pass
 
 
-@stamina.retry(on=requests.HTTPError, timeout=60)
-def _package_show(package):
-    r = requests.get(BCDC_API_URL + "package_show", params={"id": package})
-    if r.status_code in [400, 404]:
-        log.error(f"HTTP error {r.status_code}")
-        log.error(f"Response headers: {r.headers}")
-        log.error(f"Response text: {r.text}")
-        raise ValueError(f"Dataset {package} not found in DataBC API list")
-    if r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
-        log.warning(f"HTTP error: {r.status_code}")
-        log.warning(f"Response headers: {r.headers}")
-        log.warning(f"Response text: {r.text}")
-        r.raise_for_status()
-    else:
+# Same timeout/retry policy as the WFS requests (see bcdata.wfs):
+# no connect timeout, bounded read timeout so a hung server can't block forever,
+# retry only on transient errors (5xx, 429, connection errors, timeouts)
+REQUEST_TIMEOUT = (None, 65)
+
+
+def _check_response(r):
+    """Log and raise on any non-success response; retryable codes are retried by stamina"""
+    if r.ok:
         log.debug(r.text)
+        return r
+    if r.status_code in RETRYABLE_STATUS_CODES:
+        log.warning(f"HTTP error: {r.status_code}, retrying")
+    else:
+        log.error(f"HTTP error {r.status_code}")
+    log.debug(f"Response headers: {r.headers}")
+    log.debug(f"Response text: {r.text}")
+    r.raise_for_status()
     return r
 
 
-@stamina.retry(on=requests.HTTPError, timeout=60)
+@stamina.retry(on=_is_retryable, attempts=5, timeout=300)
+def _package_show(package):
+    r = requests.get(BCDC_API_URL + "package_show", params={"id": package}, timeout=REQUEST_TIMEOUT)
+    if r.status_code in [400, 404]:
+        raise ValueError(f"Dataset {package} not found in DataBC API list")
+    return _check_response(r)
+
+
+@stamina.retry(on=_is_retryable, attempts=5, timeout=300)
 def _table_definition(table_name):
     r = requests.get(
         BCDC_API_URL + "package_search",
         params={"q": "res_extras_object_name:" + table_name},
+        timeout=REQUEST_TIMEOUT,
     )
-    if r.status_code != 200:
-        log.warning(r.headers)
     if r.status_code in [400, 401, 404]:
         raise ServiceException(r.text)  # presumed request error
-    if r.status_code in [500, 502, 503, 504]:  # presumed serivce error, retry
-        r.raise_for_status()
-    return r
+    return _check_response(r)
 
 
 def get_table_name(package):
