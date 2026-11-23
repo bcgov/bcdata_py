@@ -309,7 +309,7 @@ def cat(
     help="CRS of provided bounds",
     default="EPSG:3005",
 )
-@click.option("--sortby", "-s", help="Name of sort field for paged requests")
+@click.option("--sortby", "-s", help="Name of sort field (defaults to the table's sort key)")
 @lowercase_opt
 @click.option(
     "--row-group-size",
