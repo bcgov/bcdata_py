@@ -1,9 +1,9 @@
 # Metadata about BC Geographic Warehouse tables available via bcdata,
 # bundled with the package (see https://github.com/bcgov/bcdata_py/issues/259).
 #
-# Keys are lowercase table names (bcdata.list_tables() returns the same names in
-# uppercase). Every field is optional - add a table only when there is something
-# to record. Column names (primary_key, sort_key) must also be lowercase.
+# Everything in this file is lowercase: table names (bcdata.list_tables() returns the
+# same names in uppercase) and all field values. Every field is optional - add a
+# table only when there is something to record.
 #
 #   primary_key       column that is unique, never empty, and stable across source
 #                     refreshes - safe to use as a record identifier (bc2pg primary key,
@@ -18,7 +18,7 @@
 # After editing, validate against the live services:  python scripts/validate_tables.py
 
 [tables."whse_admin_boundaries.adm_nr_districts_spg"]
-bcdc_object_name = "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SP"
+bcdc_object_name = "whse_admin_boundaries.adm_nr_districts_sp"
 
 [tables."whse_admin_boundaries.clab_indian_reserves"]
 primary_key = "clab_id"
