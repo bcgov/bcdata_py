@@ -270,6 +270,7 @@ def cat(
         count=count,
         bounds=bounds,
         bounds_crs=bounds_crs,
+        sortby=sortby,
     ):
         featurecollection = WFS.request_features(
             url=url,

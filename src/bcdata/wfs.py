@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import sys
+import tempfile
 import warnings
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
@@ -110,7 +111,7 @@ class BCWFS:
         # if a file exists in the path provided AND the file name is .bcdata, delete it
         p = Path(self.cache_path)
         if p.is_file():
-            if self.cache_path[-7:] == ".bcdata":
+            if p.name == ".bcdata":
                 p.unlink()
             # if the file is named something else, prompt user to delete it
             else:
@@ -130,7 +131,18 @@ class BCWFS:
             countdefault.find("ows:DefaultValue", {"ows": "http://www.opengis.net/ows/1.1"}).text
         )
 
-        self.request_headers = {"User-Agent": "bcdata.py ({bcdata.__version__})"}
+        self.request_headers = {"User-Agent": f"bcdata.py ({bcdata.__version__})"}
+
+    def _write_cache_file(self, cache_file, text):
+        """Write text to a cache file atomically (temp file in cache dir, then replace)"""
+        fd, tmp = tempfile.mkstemp(dir=self.cache_path, prefix=f".{cache_file}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            os.replace(tmp, os.path.join(self.cache_path, cache_file))
+        except BaseException:
+            os.unlink(tmp)
+            raise
 
     def check_cached_file(self, cache_file):
         """Return true if the file is empty / does not exist / is more than n days old"""
@@ -248,7 +260,7 @@ class BCWFS:
             b0, b1, b2, b3 = [str(b) for b in bounds]
             bnd_query = f"bbox({geom_column}, {b0}, {b1}, {b2}, {b3}, '{bounds_crs}')"
             if query:
-                cql_filter = query + " AND " + bnd_query
+                cql_filter = f"({query}) AND {bnd_query}"
             else:
                 cql_filter = bnd_query
         return cql_filter
@@ -262,8 +274,7 @@ class BCWFS:
         """
         # request capabilities if cached file is old or refresh is specified
         if self.check_cached_file("capabilities.xml") or self.refresh:
-            with open(os.path.join(self.cache_path, "capabilities.xml"), "w") as f:
-                f.write(self._request_capabilities())
+            self._write_cache_file("capabilities.xml", self._request_capabilities())
         # load cached xml from file
         with open(os.path.join(self.cache_path, "capabilities.xml"), "r") as f:
             return f.read()
@@ -284,9 +295,8 @@ class BCWFS:
     def get_schema(self, table):
         # download table definition if file is > 30 days old, empty, or refresh is specified
         if self.check_cached_file(table) or self.refresh:
-            with open(os.path.join(self.cache_path, table), "w") as f:
-                schema = self._request_schema(table)
-                f.write(json.dumps(schema, indent=4))
+            schema = self._request_schema(table)
+            self._write_cache_file(table, json.dumps(schema, indent=4))
         # load cached schema
         with open(os.path.join(self.cache_path, table), "r") as f:
             return json.loads(f.read())
@@ -314,7 +324,7 @@ class BCWFS:
     def list_tables(self):
         """read and parse capabilities xml, which lists all tables available"""
         return [
-            i.strip("pub:")
+            i.removeprefix("pub:")
             for i in list(
                 WebFeatureService(self.ows_url, version="2.0.0", xml=self.capabilities).contents
             )
@@ -441,7 +451,7 @@ class BCWFS:
             if promote_to_multi:
                 gdf = promote_gdf_to_multi(gdf)
         else:
-            gdf = gpd.GeoDataFrame()
+            gdf = gpd.GeoDataFrame(geometry=[])
 
         if as_gdf:
             return gdf
@@ -478,8 +488,11 @@ def get_data(
                 url, as_gdf=True, lowercase=lowercase, promote_to_multi=promote_to_multi
             )
         )
+    # drop empty pages so they do not affect concatenated dtypes
+    results = [r for r in results if len(r) > 0]
     if len(results) > 1:
-        gdf = pd.concat(results)
+        # reset index so feature ids are unique across pages
+        gdf = pd.concat(results, ignore_index=True)
     elif len(results) == 1:
         gdf = results[0]
     # generally all datasets should have records, but handle the case of zero results
