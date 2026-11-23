@@ -11,8 +11,6 @@
 #
 # After editing, validate against the live services:  python scripts/validate_tables.py
 
-version = 1
-
 [tables."whse_admin_boundaries.adm_nr_districts_spg"]
 bcdc_object_name = "WHSE_ADMIN_BOUNDARIES.ADM_NR_DISTRICTS_SP"
 

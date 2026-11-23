@@ -13,17 +13,15 @@ def test_bundled_metadata_loads():
 
 
 def test_load_minimal():
-    tables = load_table_metadata('version = 1\n[tables."a.b"]\nprimary_key = "id"\n')
+    tables = load_table_metadata('[tables."a.b"]\nprimary_key = "id"\n')
     assert tables == {"a.b": {"primary_key": "id"}}
 
 
 @pytest.mark.parametrize(
     "text, message",
     [
-        ('[tables."a.b"]\nprimary_key = "id"\n', "version"),
-        ('version = 2\n[tables."a.b"]\nprimary_key = "id"\n', "version"),
-        ('version = 1\n[tables."a.b"]\nprimay_key = "id"\n', "Unknown field"),
-        ('version = 1\n[tables."A.B"]\nprimary_key = "id"\n', "lowercase"),
+        ('[tables."a.b"]\nprimay_key = "id"\n', "Unknown field"),
+        ('[tables."A.B"]\nprimary_key = "id"\n', "lowercase"),
     ],
 )
 def test_load_invalid(text, message):
