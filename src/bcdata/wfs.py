@@ -1,3 +1,4 @@
+import functools
 import json
 import logging
 import math
@@ -94,6 +95,19 @@ def _is_retryable(exc):
                 return backoff
         return True
     return isinstance(exc, (requests.ConnectionError, requests.Timeout))
+
+
+@functools.lru_cache(maxsize=1)
+def _parse_table_names(ows_url, capabilities):
+    """Parse table names from capabilities xml.
+
+    Parsing is slow (~50ms) and validate_name/list_tables are called several times
+    per request, so the result is cached for as long as the capabilities xml is unchanged.
+    """
+    return tuple(
+        i.removeprefix("pub:")
+        for i in WebFeatureService(ows_url, version="2.0.0", xml=capabilities).contents
+    )
 
 
 class BCWFS:
@@ -282,7 +296,8 @@ class BCWFS:
     def get_count(self, dataset, query=None, bounds=None, bounds_crs="EPSG:3005", geom_column=None):
         """Ask DataBC WFS how many features there are in a table/query/bounds"""
         table = self.validate_name(dataset)
-        geom_column = self.get_schema(table)["geometry_column"]
+        if not geom_column:
+            geom_column = self.get_schema(table)["geometry_column"]
         count = self._request_count(
             table,
             query=query,
@@ -323,12 +338,7 @@ class BCWFS:
 
     def list_tables(self):
         """read and parse capabilities xml, which lists all tables available"""
-        return [
-            i.removeprefix("pub:")
-            for i in list(
-                WebFeatureService(self.ows_url, version="2.0.0", xml=self.capabilities).contents
-            )
-        ]
+        return list(_parse_table_names(self.ows_url, self.capabilities))
 
     def validate_name(self, dataset):
         """Check wfs/cache and the bcdc api to see if dataset name is valid"""
@@ -363,12 +373,12 @@ class BCWFS:
         geom_column = schema["geometry_column"]
 
         # find out how many records are in the table
-        if not count and check_count is False:
+        if count is None and check_count is False:
             raise ValueError(
                 "{count: Null, check_count=False} is invalid, either provide record count or let bcdata request it"
             )
         elif (
-            not count and check_count is True
+            count is None and check_count is True
         ):  # if not provided a count, get one if not told otherwise
             count = self.get_count(
                 table,
@@ -378,7 +388,7 @@ class BCWFS:
                 geom_column=geom_column,
             )
         elif (
-            count and check_count is True
+            count is not None and check_count is True
         ):  # if provided a count that is bigger than actual number of records, automatically correct count
             n = self.get_count(
                 table,
@@ -507,15 +517,7 @@ def get_data(
 
 def get_count(dataset, query=None, bounds=None, bounds_crs="EPSG:3005"):
     WFS = BCWFS()
-    table = WFS.validate_name(dataset)
-    geom_column = WFS.get_schema(table)["geometry_column"]
-    return WFS.get_count(
-        dataset,
-        query=query,
-        bounds=bounds,
-        bounds_crs=bounds_crs,
-        geom_column=geom_column,
-    )
+    return WFS.get_count(dataset, query=query, bounds=bounds, bounds_crs=bounds_crs)
 
 
 def get_sortkey(dataset):

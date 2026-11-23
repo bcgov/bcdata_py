@@ -56,10 +56,11 @@ def bounds_handler(ctx, param, value):
         try:
             value = value.strip(", []")
             retval = tuple(float(x) for x in re.split(r"[,\s]+", value))
-            assert len(retval) == 4
-            return retval
-        except Exception:  # noqa: BLE001 - any parse failure should become a clean CLI error
+        except ValueError:
             raise click.BadParameter(f"{value!r} is not a valid bounding box representation")
+        if len(retval) != 4:
+            raise click.BadParameter(f"{value!r} is not a valid bounding box representation")
+        return retval
     else:  # pragma: no cover
         return retval
 
