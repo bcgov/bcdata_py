@@ -310,7 +310,6 @@ def cat(
     default="EPSG:3005",
 )
 @click.option("--sortby", "-s", help="Name of sort field (defaults to the table's sort key)")
-@lowercase_opt
 @click.option(
     "--row-group-size",
     default=50000,
@@ -334,7 +333,6 @@ def parquet(
     bounds,
     bounds_crs,
     sortby,
-    lowercase,
     row_group_size,
     no_check,
     verbose,
@@ -348,6 +346,7 @@ def parquet(
 
     Features are spatially sorted (Hilbert curve) and geometries are stored in
     BC Albers using the native Parquet GEOMETRY type, with GeoParquet metadata.
+    Column names are written as lowercase.
 
     The download is checked before writing: if the number of features received
     differs from the WFS count, or the primary key has duplicates, nothing is
@@ -363,7 +362,6 @@ def parquet(
         bounds_crs=bounds_crs,
         count=count,
         sortby=sortby,
-        lowercase=lowercase,
         row_group_size=row_group_size,
         check=not no_check,
     )

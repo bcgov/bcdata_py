@@ -47,18 +47,18 @@ def test_provenance_metadata(airports):
     meta = json.loads(pq.read_metadata(airports).metadata[b"bcdata"])
     assert meta["source"] == AIRPORTS_TABLE
     assert meta["feature_count"] == bcdata.get_count(AIRPORTS_TABLE)
-    assert meta["columns"]["AIRPORT_NAME"]
-    assert "NUMBER_OF_RUNWAYS" in meta["integer_columns_inferred"]
-    assert "SEQUENCE_ID" in meta["integer_columns_inferred"]
-    assert "ELEVATION" not in meta["integer_columns_inferred"]
+    assert meta["columns"]["airport_name"]
+    assert "number_of_runways" in meta["integer_columns_inferred"]
+    assert "sequence_id" in meta["integer_columns_inferred"]
+    assert "elevation" not in meta["integer_columns_inferred"]
 
 
 def test_column_types(airports):
     schema = pq.read_schema(airports)
-    assert str(schema.field("NUMBER_OF_RUNWAYS").type) == "int64"
-    assert str(schema.field("ELEVATION").type) == "double"
-    assert str(schema.field("DATE_UPDATED").type) == "date32[day]"
-    assert str(schema.field("AIRPORT_NAME").type) == "string"
+    assert str(schema.field("number_of_runways").type) == "int64"
+    assert str(schema.field("elevation").type) == "double"
+    assert str(schema.field("date_updated").type) == "date32[day]"
+    assert str(schema.field("airport_name").type) == "string"
 
 
 def test_readers(airports):
@@ -69,9 +69,10 @@ def test_readers(airports):
     assert n[0][0] == len(df)
 
 
-def test_query_lowercase(tmp_path):
+def test_query(tmp_path):
+    # column names are always written as lowercase
     out = tmp_path / "terrace.parquet"
-    bcdata.to_parquet(AIRPORTS_TABLE, str(out), query=TERRACE_QUERY, lowercase=True)
+    bcdata.to_parquet(AIRPORTS_TABLE, str(out), query=TERRACE_QUERY)
     df = gpd.read_parquet(out)
     assert len(df) == 1
     assert df["airport_name"].iloc[0] == "Terrace (Northwest Regional) Airport"
@@ -85,7 +86,7 @@ def test_paged_row_groups(tmp_path):
     assert md.num_rows == 12000
     assert [md.row_group(i).num_rows for i in range(md.num_row_groups)] == [5000, 5000, 2000]
     df = gpd.read_parquet(out)
-    assert df["ASSESSMENT_ID"].is_unique
+    assert df["assessment_id"].is_unique
 
 
 def test_cli(tmp_path):
@@ -116,9 +117,9 @@ def test_no_features(tmp_path):
     assert meta["integer_columns_inferred"] == []
     schema = pq.read_schema(out)
     # with no values to infer from, numeric columns are not assumed to be integers
-    assert str(schema.field("NUMBER_OF_RUNWAYS").type) == "double"
-    assert str(schema.field("SEQUENCE_ID").type) == "double"
-    assert "AIRPORT_NAME" in schema.names
+    assert str(schema.field("number_of_runways").type) == "double"
+    assert str(schema.field("sequence_id").type) == "double"
+    assert "airport_name" in schema.names
     assert str(md.schema.column(schema.get_field_index("geometry")).logical_type).startswith(
         "Geometry"
     )
@@ -136,7 +137,7 @@ def test_integer_inference():
     schema = {
         "properties": {"ID": "decimal", "MEASURE": "decimal", "EMPTY": "decimal", "NAME": "string"}
     }
-    columns = _Columns(schema, lowercase=False)
+    columns = _Columns(schema)
     columns.arrays(
         [
             {"ID": 1, "MEASURE": 2, "EMPTY": None, "NAME": "a"},
@@ -152,7 +153,7 @@ def test_string_values_coerced():
 
     from bcdata.parquet import _Columns
 
-    columns = _Columns({"properties": {"CODE": "string"}}, lowercase=False)
+    columns = _Columns({"properties": {"CODE": "string"}})
     (arr,) = columns.arrays([{"CODE": "a"}, {"CODE": 5}, {"CODE": None}, {"CODE": True}])
     assert arr.to_pylist() == ["a", "5", None, "true"]
 
@@ -374,7 +375,7 @@ def test_large_integers_tracked():
     """whole numbers of 2**53 or more cannot be held exactly in float64"""
     from bcdata.parquet import _Columns
 
-    columns = _Columns({"properties": {"BIG": "decimal", "SMALL": "decimal"}}, lowercase=False)
+    columns = _Columns({"properties": {"BIG": "decimal", "SMALL": "decimal"}})
     columns.arrays([{"BIG": 2**53, "SMALL": 1}, {"BIG": 5, "SMALL": True}])
     assert columns.large_integers == {"BIG"}
-    assert "BIG" not in columns.integer_columns()
+    assert "big" not in columns.integer_columns()

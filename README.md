@@ -248,6 +248,7 @@ Usage: bcdata parquet [OPTIONS] DATASET
 
   Features are spatially sorted (Hilbert curve) and geometries are stored in
   BC Albers using the native Parquet GEOMETRY type, with GeoParquet metadata.
+  Column names are written as lowercase.
 
   The download is checked before writing: if the number of features received
   differs from the WFS count, or the primary key has duplicates, nothing is
@@ -266,7 +267,6 @@ Options:
                                   CRS of provided bounds
   -s, --sortby TEXT               Name of sort field (defaults to the table's
                                   sort key)
-  -l, --lowercase                 Write column/properties names as lowercase
   --row-group-size INTEGER RANGE  Maximum rows per parquet row group
                                   [default: 50000; x>=1]
   --no-check                      Write even if the download fails consistency

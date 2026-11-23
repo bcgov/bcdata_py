@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import tempfile
 from datetime import UTC, date, datetime
@@ -142,7 +143,7 @@ def _hilbert_keys(geoms, present):
 class _Columns:
     """Map WFS schema properties to staging column types and track integer-ness"""
 
-    def __init__(self, wfs_schema, lowercase):
+    def __init__(self, wfs_schema):
         self.source = []  # WFS property names, in schema order
         self.types = {}  # WFS property name -> WFS type
         for name, wfs_type in wfs_schema["properties"].items():
@@ -151,8 +152,9 @@ class _Columns:
                 continue
             self.source.append(name)
             self.types[name] = wfs_type
-        self.names = {c: c.lower() if lowercase else c for c in self.source}
-        if GEOMETRY_COLUMN in [n.lower() for n in self.names.values()]:
+        # output column names are always lowercase
+        self.names = {c: c.lower() for c in self.source}
+        if GEOMETRY_COLUMN in self.names.values():
             raise ValueError(f"Source has a column named {GEOMETRY_COLUMN}, cannot write")
         # WFS/BCDC do not distinguish integers from decimals, so integer columns
         # are inferred: numeric columns where every value seen is a whole number...
@@ -341,16 +343,20 @@ def _write_output(local_path, out_path):
     else:
         parent = os.path.dirname(os.path.abspath(out_path))
         os.makedirs(parent, exist_ok=True)
-        # copy next to destination then rename, so the destination is never partial
-        fd, tmp = tempfile.mkstemp(dir=parent, prefix=f".{os.path.basename(out_path)}.")
+        # copy next to destination then rename, so the destination is never partial.
+        # Create the temp file with mode 0666 so the OS applies the umask, as for any
+        # normally created file (mkstemp would create it readable only by its owner,
+        # and changing the umask to read it is not thread safe)
+        while True:
+            tmp = os.path.join(parent, f".{os.path.basename(out_path)}.{secrets.token_hex(8)}")
+            try:
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+                break
+            except FileExistsError:
+                continue
         os.close(fd)
         try:
             shutil.copyfile(local_path, tmp)
-            # mkstemp creates files readable only by their owner - give the output
-            # the permissions a normally created file would have (0666 less umask)
-            umask = os.umask(0)
-            os.umask(umask)
-            os.chmod(tmp, 0o666 & ~umask)
             os.replace(tmp, out_path)
         except BaseException:
             if os.path.exists(tmp):
@@ -366,7 +372,6 @@ def to_parquet(
     bounds_crs="EPSG:3005",
     count=None,
     sortby=None,
-    lowercase=False,
     row_group_size=50000,
     compression="zstd",
     compression_level=None,
@@ -386,7 +391,6 @@ def to_parquet(
         sortby: sort field for requests (defaults to the table's sort key, see
             BCWFS.get_sortkey). Requests are always sorted, even when the download
             fits in one request, so features arrive in the same order every time.
-        lowercase: write column names as lowercase
         row_group_size: maximum rows per parquet row group
         compression, compression_level: parquet compression
         check: fail with DownloadCheckError if the number of features received
@@ -404,7 +408,7 @@ def to_parquet(
     if not out_path:
         out_path = table.lower() + ".parquet"
     wfs_schema = WFS.get_schema(table)
-    columns = _Columns(wfs_schema, lowercase)
+    columns = _Columns(wfs_schema)
 
     # count expected features independently of how requests are paged
     n_expected = WFS.get_count(
