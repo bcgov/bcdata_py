@@ -85,9 +85,10 @@ def _resource_matches(table_name, resource):
     bcdc_object_name = bcdata.table_metadata.get(table_name.lower(), {}).get(
         "bcdc_object_name", table_name
     )
+    object_name = (resource.get("object_name") or "").upper()
     return (
         resource.get("bcdc_type") == "geographic"
-        and resource.get("object_name") in (table_name, bcdc_object_name)
+        and object_name in (table_name.upper(), bcdc_object_name.upper())
         and bool(resource.get("details"))
     )
 

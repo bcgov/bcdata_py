@@ -6,6 +6,10 @@ from importlib.resources import files
 # fields a table entry may have - see the comments at the top of tables.toml
 FIELDS = {"primary_key", "sort_key", "bcdc_object_name"}
 
+# fields holding column names, which must be lowercase: consumers such as bc2pg
+# compare them to lowercased column names
+COLUMN_FIELDS = {"primary_key", "sort_key"}
+
 
 def load_table_metadata(text=None):
     """Parse and validate table metadata, returning {lowercase table name: {field: value}}.
@@ -18,9 +22,19 @@ def load_table_metadata(text=None):
     for table, fields in tables.items():
         if table != table.lower():
             raise ValueError(f"Table names in table metadata must be lowercase: {table}")
+        if not isinstance(fields, dict):
+            # a malformed data file, reported like every other metadata error
+            raise ValueError(  # noqa: TRY004
+                f'Table metadata for {table} must be a table of fields, eg [tables."{table}"]'
+            )
         unknown = set(fields) - FIELDS
         if unknown:
             raise ValueError(f"Unknown field(s) for {table} in table metadata: {sorted(unknown)}")
+        for field, value in fields.items():
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{table}: {field} must be a non-empty string, got {value!r}")
+            if field in COLUMN_FIELDS and value != value.lower():
+                raise ValueError(f"{table}: {field} column names must be lowercase: {value}")
         if "sort_key" in fields and fields.get("sort_key") == fields.get("primary_key"):
             raise ValueError(
                 f"{table}: sort_key and primary_key are the same column, use primary_key only"

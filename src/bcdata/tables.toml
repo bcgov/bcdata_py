@@ -1,8 +1,9 @@
 # Metadata about BC Geographic Warehouse tables available via bcdata,
 # bundled with the package (see https://github.com/bcgov/bcdata_py/issues/259).
 #
-# Keys are lowercase table names, as returned by bcdata.list_tables() (lowercased).
-# Every field is optional - add a table only when there is something to record.
+# Keys are lowercase table names (bcdata.list_tables() returns the same names in
+# uppercase). Every field is optional - add a table only when there is something
+# to record. Column names (primary_key, sort_key) must also be lowercase.
 #
 #   primary_key       column that is unique, never empty, and stable across source
 #                     refreshes - safe to use as a record identifier (bc2pg primary key,

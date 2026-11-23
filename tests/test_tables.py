@@ -17,12 +17,23 @@ def test_load_minimal():
     assert tables == {"a.b": {"primary_key": "id"}}
 
 
+def test_bcdc_object_name_may_be_uppercase():
+    # bcdc_object_name holds the catalogue's own (uppercase) spelling
+    text = '[tables."a.b"]\nbcdc_object_name = "A.B_SP"\n'
+    assert load_table_metadata(text) == {"a.b": {"bcdc_object_name": "A.B_SP"}}
+
+
 @pytest.mark.parametrize(
     "text, message",
     [
         ('[tables."a.b"]\nprimay_key = "id"\n', "Unknown field"),
         ('[tables."A.B"]\nprimary_key = "id"\n', "lowercase"),
         ('[tables."a.b"]\nprimary_key = "id"\nsort_key = "id"\n', "same column"),
+        ('[tables."a.b"]\nprimary_key = "ID"\n', "lowercase"),
+        ('[tables."a.b"]\nsort_key = "Id"\n', "lowercase"),
+        ('[tables."a.b"]\nprimary_key = 5\n', "non-empty string"),
+        ('[tables."a.b"]\nprimary_key = ""\n', "non-empty string"),
+        ('[tables]\n"a.b" = "id"\n', "table of fields"),
     ],
 )
 def test_load_invalid(text, message):
