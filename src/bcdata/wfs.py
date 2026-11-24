@@ -178,9 +178,12 @@ def _retry_decision(exc):
 
 XSD = "{http://www.w3.org/2001/XMLSchema}"
 WFS_NS = "{http://www.opengis.net/wfs/2.0}"
+OWS_NS = "{http://www.opengis.net/ows/1.1}"
 
-# GML property types of geometry columns, and the geometry type each is reported as
-# (as named by owslib, which bcdata used to parse schemas - cached schemas use these)
+# GML property types of geometry columns, and the geometry type each is reported as.
+# The names are those owslib gave (bcdata used it to parse schemas), kept
+# because they are user facing: `bcdata info` prints the schema, and the README shows
+# "geometry": "GeometryCollection". Cached schemas use them too.
 GEOMETRY_TYPES = {
     "PointPropertyType": "Point",
     "PolygonPropertyType": "Polygon",
@@ -240,7 +243,7 @@ class BCWFS:
 
     def __init__(self, refresh=False):
         self.wfs_url = "https://openmaps.gov.bc.ca/geo/pub/wfs"
-        self.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows?service=WFS&request=Getcapabilities"
+        self.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows"
 
         # point to cache path
         if "BCDATA_CACHE" in os.environ:
@@ -264,12 +267,10 @@ class BCWFS:
         self.request_headers = {"User-Agent": f"bcdata.py ({bcdata.__version__})"}
         self.capabilities = self.get_capabilities()
         # get pagesize from xml using the xpath from https://github.com/bcgov/bcdata/
-        countdefault = ET.fromstring(self.capabilities).findall(
-            ".//{http://www.opengis.net/ows/1.1}Constraint[@name='CountDefault']"
-        )[0]
-        self.pagesize = int(
-            countdefault.find("ows:DefaultValue", {"ows": "http://www.opengis.net/ows/1.1"}).text
+        countdefault = ET.fromstring(self.capabilities).find(
+            f".//{OWS_NS}Constraint[@name='CountDefault']/{OWS_NS}DefaultValue"
         )
+        self.pagesize = int(countdefault.text)
 
     def _write_cache_file(self, cache_file, text):
         """Write text to a cache file atomically (temp file in cache dir, then replace)"""
@@ -282,35 +283,43 @@ class BCWFS:
             os.unlink(tmp)
             raise
 
-    def check_cached_file(self, cache_file):
-        """Return true if the file is empty / does not exist / is more than n days old"""
-        cache_file = os.path.join(self.cache_path, cache_file)
-        if not os.path.exists(os.path.join(cache_file)):
+    def _cache_is_stale(self, cache_file):
+        """Return True if a cache file should be requested again.
+
+        That is, if refresh was asked for, or the file is missing, empty, or more
+        than cache_refresh_days old.
+        """
+        if self.refresh:
             return True
-        else:
-            mod_date = datetime.fromtimestamp(os.path.getmtime(cache_file), tz=UTC)
-            # if file older than specified days or empty, return true
-            return (
-                mod_date < (datetime.now(tz=UTC) - timedelta(days=self.cache_refresh_days))
-                or os.stat(cache_file).st_size == 0
-            )
+        path = os.path.join(self.cache_path, cache_file)
+        if not os.path.exists(path):
+            return True
+        mod_date = datetime.fromtimestamp(os.path.getmtime(path), tz=UTC)
+        return (
+            mod_date < (datetime.now(tz=UTC) - timedelta(days=self.cache_refresh_days))
+            or os.stat(path).st_size == 0
+        )
+
+    def _request_xml(self, request, **params):
+        """Make a WFS request that returns an xml document (GetCapabilities,
+        DescribeFeatureType), and return the parsed document and its raw bytes.
+
+        The service can report errors as an ExceptionReport document rather than
+        with an error status, so that is raised as a ServiceException.
+        """
+        params = {"service": "WFS", "version": "2.0.0", "request": request, **params}
+        r = self._request(self.ows_url, params=params, silent=True)
+        root = ET.fromstring(r.content)
+        if root.tag.endswith("ExceptionReport"):
+            raise ServiceException(r.text)
+        return root, r.content
 
     def _request_schemas(self, tables):
         """Request the schemas of several tables in one DescribeFeatureType request.
 
         Returns {table: schema}, see _parse_schema.
         """
-        r = self._request(
-            self.ows_url.split("?")[0],
-            params={
-                "service": "WFS",
-                "version": "2.0.0",
-                "request": "DescribeFeatureType",
-                "typeNames": ",".join(tables),
-            },
-            silent=True,
-        )
-        root = ET.fromstring(r.content)
+        root, _ = self._request_xml("DescribeFeatureType", typeNames=",".join(tables))
         # each table is a top level element, typed by a complexType listing its columns
         types = {e.get("name"): e.get("type") for e in root.findall(XSD + "element")}
         complex_types = {c.get("name"): c for c in root.findall(XSD + "complexType")}
@@ -323,11 +332,9 @@ class BCWFS:
 
     def _request_capabilities(self):
         """Request the capabilities document, which lists every table."""
-        r = self._request(self.ows_url, params={"version": "2.0.0"}, silent=True)
-        if ET.fromstring(r.content).tag.endswith("ExceptionReport"):
-            raise ServiceException(r.text)
+        _, content = self._request_xml("GetCapabilities")
         # the document is utf-8 (and declares it), whatever the response headers say
-        return r.content.decode("utf-8")
+        return content.decode("utf-8")
 
     @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request(self, url, params=None, silent=False):
@@ -421,8 +428,7 @@ class BCWFS:
           - $BCDATA_CACHE environment variable
           - default (~/.bcdata)
         """
-        # request capabilities if cached file is old or refresh is specified
-        if self.check_cached_file("capabilities.xml") or self.refresh:
+        if self._cache_is_stale("capabilities.xml"):
             self._write_cache_file("capabilities.xml", self._request_capabilities())
         # load cached xml from file
         with open(os.path.join(self.cache_path, "capabilities.xml"), "r") as f:
@@ -448,8 +454,7 @@ class BCWFS:
         Describing up to SCHEMAS_PER_REQUEST tables per request means checking many
         tables makes a few requests rather than one per table.
         """
-        # download table definitions if file is > 30 days old, empty, or refresh is specified
-        stale = [t for t in tables if self.refresh or self.check_cached_file(t)]
+        stale = [t for t in tables if self._cache_is_stale(t)]
         for i in range(0, len(stale), SCHEMAS_PER_REQUEST):
             for table, schema in self._request_schemas(stale[i : i + SCHEMAS_PER_REQUEST]).items():
                 self._write_cache_file(table, json.dumps(schema, indent=4))

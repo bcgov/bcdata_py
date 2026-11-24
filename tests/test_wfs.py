@@ -22,7 +22,7 @@ def _wfs_without_network():
     """A BCWFS for testing request methods, created without requesting capabilities"""
     WFS = bcdata.wfs.BCWFS.__new__(bcdata.wfs.BCWFS)
     WFS.wfs_url = "https://openmaps.gov.bc.ca/geo/pub/wfs"
-    WFS.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows?service=WFS&request=Getcapabilities"
+    WFS.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows"
     WFS.request_headers = {"User-Agent": "bcdata.py tests"}
     return WFS
 
@@ -472,3 +472,20 @@ def test_request_schemas_untyped_column():
         m.get(requests_mock.ANY, text=untyped)
         with pytest.raises(bcdata.wfs.ServiceException, match="column NAME"):
             WFS._request_schemas(["A.POINTS", "B.AREAS"])
+
+
+EXCEPTION_REPORT = """<?xml version="1.0" encoding="UTF-8"?>
+<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1" version="2.0.0">
+  <ows:Exception exceptionCode="InvalidParameterValue" locator="typeName">
+    <ows:ExceptionText>Feature type pub:C.OTHER unknown</ows:ExceptionText>
+  </ows:Exception>
+</ows:ExceptionReport>"""
+
+
+def test_request_schemas_exception_report():
+    """an ExceptionReport returned with status 200 raises the service's message"""
+    WFS = _wfs_without_network()
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, text=EXCEPTION_REPORT)
+        with pytest.raises(bcdata.wfs.ServiceException, match="C.OTHER unknown"):
+            WFS._request_schemas(["C.OTHER"])
