@@ -28,7 +28,6 @@
     "whse_forest_tenure.ften_range_poly_svw": "objectid",
     "whse_forest_tenure.ften_recreation_poly_svw": "rmf_skey",
     "whse_forest_vegetation.ogsr_priority_def_area_cur_sp": "ogsr_pdac_sysid",
-    "whse_forest_vegetation.rec_visual_landscape_inventory": "vli_polygon_no",
     "whse_forest_vegetation.veg_comp_lyr_r1_poly": "feature_id",
     "whse_forest_vegetation.veg_consolidated_cut_blocks_sp": "vccb_sysid",
     "whse_human_cultural_economic.hist_historic_environmnt_pa_sv": "hist_hef_sysid",
