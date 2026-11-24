@@ -1,15 +1,16 @@
 # data
 
-Table metadata that bcdata maintains itself, because the BC Data Catalogue (BCDC) and the
-WFS do not provide it.
+BC Data Catalogue (BCDC) and WFS do not identify primary keys, and the two services sometimes
+return different names for the same dataset. Metadata files in this folder are maintained to
+fix these issues.
 
 ## table_metadata.toml
 
 Per-table metadata, bundled with the bcdata package and loaded on import
 (`bcdata.table_metadata`). Each entry is a table name with one or more of these fields:
 
-- `primary_key`: column that is unique, never empty, and stable across source refreshes, so it
-  is safe to use as a record identifier. Also used to sort paged requests.
+- `primary_key`: column that is unique, never empty, and stable across source refreshes, and
+  therefore safe to use as a record identifier. Also used to sort paged requests.
 - `sort_key`: column that is unique and never empty within one download, but may not be stable
   across refreshes. Used only to sort paged requests.
 - `bcdc_object_name`: the table's object name in BCDC, where it differs from the WFS name.
@@ -19,10 +20,11 @@ against the live services:
 
     python scripts/validate_tables.py
 
-This also runs on pull requests that change the file, and weekly.
+This script is run on pull requests that change the file, plus on a scheduled basis to check
+for changes to the services.
 
-`src/bcdata/table_metadata.toml` is a symlink to this file, so that it is included in the
-package. Edit the file here.
+Note that `src/bcdata/table_metadata.toml` is a symlink to this file so that the file gets
+included in the package. Edit the file here.
 
 ## primary_keys.json (deprecated)
 
@@ -38,17 +40,11 @@ this path on the `main` branch:
 
 All of these versions download it from the repository's old location,
 `https://raw.githubusercontent.com/smnorris/bcdata/main/data/primary_keys.json`, which works
-only because GitHub redirects the old repository name to this one. GitHub stops redirecting
-if a repository is created at the old name, so **do not create a repository at
-`smnorris/bcdata`**, including by forking this one under that name.
+only because GitHub redirects the old repository name to this one.
 
-If the redirect ever stops working anyway, the fallback is to create `smnorris/bcdata`
-containing only `data/primary_keys.json` on `main`, plus a README linking here. Old installs
-then fetch the file from that repository directly. Do not do this while the redirect works:
-creating that repository ends the redirect for every old URL, including issue and PR links,
-clone URLs, and the project links in past PyPI releases.
+If the redirect stops working or if `data/primary_keys.json` needs to be removed from main,
+a repo containing only `data/primary_keys.json` on `main` (plus a README description linking
+here) could be added.  Old installs would then fetch that file from that repo directly.
 
-The file is frozen: bcdata no longer reads it, and new keys go in `table_metadata.toml` only.
-The one exception is a key found to be wrong. Remove it here too, because older versions
-use these keys as the primary key when loading tables with `bc2pg`, and a non-unique key
-makes the load fail.
+Default to just retaining the file while the redirect works - all old issue / PR / pypi links
+are also redirected. It isn't worth breaking these linkages unless necessary.
