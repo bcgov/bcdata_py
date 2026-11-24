@@ -75,6 +75,22 @@ def test_cat_bounds_ll():
     assert len(result.output.split("\n")) == 4
 
 
+def test_cat_typed():
+    """--typed writes dates as YYYY-MM-DD, and numbers as DataBC sends them"""
+    runner = CliRunner()
+    args = ["cat", ASSESSMENTS_TABLE, "--count", "1", "--sortby", "ASSESSMENT_ID"]
+    args += ["--query", "ASSESSMENT_DATE IS NOT NULL"]
+    raw = json.loads(runner.invoke(cli, args).output)
+    result = runner.invoke(cli, args + ["--typed", "--lowercase"])
+    assert result.exit_code == 0
+    typed = json.loads(result.output)
+    assert "id" not in raw and "id" not in typed
+    assert raw["properties"]["ASSESSMENT_DATE"].endswith("Z")
+    assert typed["properties"]["assessment_date"] == raw["properties"]["ASSESSMENT_DATE"][:10]
+    assert typed["properties"]["assessment_id"] == raw["properties"]["ASSESSMENT_ID"]
+    assert isinstance(typed["properties"]["assessment_id"], int)
+
+
 def test_dump():
     runner = CliRunner()
     result = runner.invoke(cli, ["dump", AIRPORTS_TABLE, "--count", 1])
@@ -91,6 +107,7 @@ def test_dump_typed():
     raw = json.loads(runner.invoke(cli, args).output)["features"][0]["properties"]
     result = runner.invoke(cli, args + ["--typed"])
     assert result.exit_code == 0
+    assert all("id" not in f for f in json.loads(result.output)["features"])
     typed = json.loads(result.output)["features"][0]["properties"]
     assert raw["ASSESSMENT_DATE"].endswith("Z")
     assert typed["ASSESSMENT_DATE"] == raw["ASSESSMENT_DATE"][:10]
