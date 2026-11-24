@@ -219,8 +219,9 @@ def dump(
         as_gdf=typed,
     )
     if typed:
-        # dates (datetime.date) are not JSON serializable, str() gives YYYY-MM-DD
-        click.echo(data.to_json(default=str), nl=False)
+        # dates (datetime.date) are not JSON serializable, str() gives YYYY-MM-DD.
+        # drop_id, as the GeoDataFrame index is only a row number
+        click.echo(data.to_json(default=str, drop_id=True), nl=False)
     else:
         click.echo(json.dumps(data), nl=False)
 
@@ -256,6 +257,12 @@ def dump(
     is_flag=True,
     default=False,
 )
+@click.option(
+    "--typed",
+    is_flag=True,
+    help="Set property types from the table schema: dates as YYYY-MM-DD. Numbers are "
+    "written as DataBC sends them",
+)
 @verbose_opt
 @quiet_opt
 def cat(
@@ -269,11 +276,14 @@ def cat(
     sortby,
     lowercase,
     promote_to_multi,
+    typed,
     verbose,
     quiet,
 ):
     """Write DataBC features to stdout as GeoJSON feature objects."""
-    # Note that cat does not concatenate!
+    # Note --typed does not attempt to cast integers (because cat
+    # runs per page and the full dataset has to be in memory to
+    # inspect integer columns correctly)
     verbosity = verbose - quiet
     configure_logging(verbosity)
     dump_kwds = {"sort_keys": True}
@@ -285,6 +295,8 @@ def cat(
         dump_kwds["separators"] = (",", ":")
     table = bcdata.validate_name(dataset)
     WFS = bcdata.wfs.BCWFS()
+    if typed:
+        columns = bcdata.wfs.Columns(WFS.get_schema(table), lowercase=lowercase)
     for url in WFS.define_requests(
         table,
         query=query,
@@ -295,11 +307,13 @@ def cat(
     ):
         featurecollection = WFS.request_features(
             url=url,
-            as_gdf=False,
-            lowercase=lowercase,
+            # with --typed, columns names the properties (lowercased if asked for)
+            lowercase=lowercase and not typed,
             promote_to_multi=promote_to_multi,
         )
         for feat in featurecollection["features"]:
+            if typed:
+                feat["properties"] = columns.json_properties(feat["properties"])
             click.echo(json.dumps(feat, **dump_kwds))
 
 

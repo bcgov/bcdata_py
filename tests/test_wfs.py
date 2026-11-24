@@ -200,6 +200,39 @@ def test_get_data_paged_count(small_pages):
     assert len(set(ids)) == count
 
 
+def test_get_data_no_feature_ids():
+    """DataBC's feature ids are dropped: a primary key, or generated per request"""
+    data = bcdata.get_data(AIRPORTS_TABLE, count=2)
+    assert all("id" not in f for f in data["features"])
+
+
+def test_get_data_promote_to_multi():
+    data = bcdata.get_data(AIRPORTS_TABLE, count=1, promote_to_multi=True)
+    assert data["features"][0]["geometry"]["type"] == "MultiPoint"
+
+
+def test_promote_geojson_to_multi():
+    promote = bcdata.wfs.promote_geojson_to_multi
+    assert promote({"type": "Point", "coordinates": [1, 2]}) == {
+        "type": "MultiPoint",
+        "coordinates": [[1, 2]],
+    }
+    line = {"type": "LineString", "coordinates": [[1, 2], [3, 4]]}
+    assert promote(line) == {"type": "MultiLineString", "coordinates": [line["coordinates"]]}
+    multi = {"type": "MultiPolygon", "coordinates": []}
+    assert promote(multi) is multi
+    assert promote(None) is None
+
+
+def test_json_properties():
+    """Properties typed from the schema: dates as YYYY-MM-DD, numbers unchanged"""
+    schema = {"properties": {"D": "date", "N": "decimal", "S": "string", "B": "hexBinary"}}
+    columns = bcdata.wfs.Columns(schema, lowercase=True)
+    properties = {"D": "2025-08-20Z", "N": 5, "S": 12, "B": "00ff"}
+    assert columns.json_properties(properties) == {"d": "2025-08-20", "n": 5, "s": "12"}
+    assert columns.json_properties({"N": 5.5}) == {"d": None, "n": 5.5, "s": None}
+
+
 def test_get_data_sortby():
     data = bcdata.get_data(AIRPORTS_TABLE, count=1, sortby="AIRPORT_NAME")
     assert data["features"][0]["properties"]["AIRPORT_NAME"] == "100 Mile House Airport"

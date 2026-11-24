@@ -52,6 +52,21 @@ def promote_gdf_to_multi(df):
     return df
 
 
+# GeoJSON single part geometry types -> their multipart types
+MULTI_TYPES = {"Point": "MultiPoint", "LineString": "MultiLineString", "Polygon": "MultiPolygon"}
+
+
+def promote_geojson_to_multi(geometry):
+    """Return a GeoJSON geometry as multipart (null and multipart geometries unchanged)"""
+    if geometry and geometry["type"] in MULTI_TYPES:
+        return {
+            **geometry,
+            "type": MULTI_TYPES[geometry["type"]],
+            "coordinates": [geometry["coordinates"]],
+        }
+    return geometry
+
+
 class ServiceException(Exception):
     pass
 
@@ -349,6 +364,25 @@ class Columns:
                 values = [v if v is None or isinstance(v, str) else json.dumps(v) for v in values]
             arrays.append(pa.array(values, type=self.arrow_type(c)))
         return arrays
+
+    def json_properties(self, properties):
+        """Return one feature's properties typed from the schema, for writing as JSON.
+
+        Dates are YYYY-MM-DD and strings are strings, as in arrays(). Numbers are left
+        as the WFS sends them (whole numbers as integers), as which columns are integers
+        is only known once every feature has been seen.
+        """
+        typed = {}
+        for c in self.source:
+            value = properties.get(c)
+            wfs_type = self.types[c]
+            if wfs_type == "date":
+                value = parse_date(value)
+                value = value.isoformat() if value else None
+            elif wfs_type != "decimal" and value is not None and not isinstance(value, str):
+                value = json.dumps(value)
+            typed[self.names[c]] = value
+        return typed
 
     def log_large_integers(self, table):
         if self.large_integers:
@@ -719,11 +753,24 @@ class BCWFS:
         lowercase=False,
         promote_to_multi=False,
     ):
-        """Make a request to WFS and return data as a FeatureCollection or a GeoDataFrame"""
-        # get the data
-        featurecollection = self._request_featurecollection(url)
+        """Make a request to WFS and return data as a FeatureCollection or a GeoDataFrame
 
-        # load to gdf for reprojection/minor data cleaning
+        The FeatureCollection is as DataBC sends it (eg dates are strings like
+        '2025-08-20Z'), other than property names being lowercased or geometries
+        promoted to multipart, if asked for, and feature ids being dropped.
+        """
+        featurecollection = self._request_featurecollection(url)
+        if not as_gdf:
+            for feature in featurecollection["features"]:
+                # DataBC's feature ids are either a table's primary key (already a
+                # property) or, for views, generated anew for each request
+                feature.pop("id", None)
+                if lowercase:
+                    feature["properties"] = {k.lower(): v for k, v in feature["properties"].items()}
+                if promote_to_multi:
+                    feature["geometry"] = promote_geojson_to_multi(feature["geometry"])
+            return featurecollection
+
         if len(featurecollection["features"]) > 0:
             gdf = gpd.GeoDataFrame.from_features(featurecollection)
             gdf = gdf.set_crs("EPSG:3005")
@@ -735,11 +782,7 @@ class BCWFS:
                 gdf = promote_gdf_to_multi(gdf)
         else:
             gdf = gpd.GeoDataFrame(geometry=[])
-
-        if as_gdf:
-            return gdf
-        else:
-            return json.loads(gdf.to_json())
+        return gdf
 
 
 def get_data(
@@ -770,25 +813,16 @@ def get_data(
     )
     if as_gdf:
         return _typed_gdf(WFS, table, urls, lowercase=lowercase, promote_to_multi=promote_to_multi)
-    results = []
+    data = {"type": "FeatureCollection", "features": []}
     for url in urls:
-        results.append(
-            WFS.request_features(
-                url, as_gdf=True, lowercase=lowercase, promote_to_multi=promote_to_multi
-            )
+        featurecollection = WFS.request_features(
+            url, lowercase=lowercase, promote_to_multi=promote_to_multi
         )
-    # drop empty pages so they do not affect concatenated dtypes
-    results = [r for r in results if len(r) > 0]
-    if len(results) > 1:
-        # reset index so feature ids are unique across pages
-        gdf = pd.concat(results, ignore_index=True)
-    elif len(results) == 1:
-        gdf = results[0]
-    # generally all datasets should have records, but handle the case of zero results
-    # by creating an empty geodataframe
-    else:
-        gdf = gpd.GeoDataFrame(geometry=[])
-    return json.loads(gdf.to_json())
+        # keep the crs, but not members that describe a single page (eg numberReturned)
+        if featurecollection.get("crs"):
+            data["crs"] = featurecollection["crs"]
+        data["features"].extend(featurecollection["features"])
+    return data
 
 
 def _typed_gdf(WFS, table, urls, lowercase=False, promote_to_multi=False):

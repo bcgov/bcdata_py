@@ -164,6 +164,9 @@ Options:
   -s, --sortby TEXT               Name of sort field
   -l, --lowercase                 Write column/properties names as lowercase
   -m, --promote-to-multi          Promote features to multipart
+  --typed                         Set property types from the table schema:
+                                  dates as YYYY-MM-DD. Numbers are written as
+                                  DataBC sends them
   -v, --verbose                   Increase verbosity.
   -q, --quiet                     Decrease verbosity.
   --help                          Show this message and exit.
