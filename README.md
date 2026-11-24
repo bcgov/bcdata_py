@@ -151,10 +151,6 @@ Usage: bcdata cat [OPTIONS] DATASET
 
   Write DataBC features to stdout as GeoJSON feature objects.
 
-  With --typed, numbers are written as DataBC sends them (whole numbers as
-  integers), rather than set from the table schema as dump --typed does: which
-  columns are integers is only known once every feature has been seen.
-
 Options:
   --query TEXT                    A valid CQL or ECQL query
   -c, --count INTEGER             Number of features to request and dump
@@ -169,7 +165,8 @@ Options:
   -l, --lowercase                 Write column/properties names as lowercase
   -m, --promote-to-multi          Promote features to multipart
   --typed                         Set property types from the table schema:
-                                  dates as YYYY-MM-DD
+                                  dates as YYYY-MM-DD. Numbers are written as
+                                  DataBC sends them
   -v, --verbose                   Increase verbosity.
   -q, --quiet                     Decrease verbosity.
   --help                          Show this message and exit.

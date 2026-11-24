@@ -260,7 +260,8 @@ def dump(
 @click.option(
     "--typed",
     is_flag=True,
-    help="Set property types from the table schema (where possible): dates as YYYY-MM-DD",
+    help="Set property types from the table schema: dates as YYYY-MM-DD. Numbers are "
+    "written as DataBC sends them",
 )
 @verbose_opt
 @quiet_opt
@@ -279,8 +280,7 @@ def cat(
     verbose,
     quiet,
 ):
-    """Write DataBC features to stdout as GeoJSON feature objects.
-    """
+    """Write DataBC features to stdout as GeoJSON feature objects."""
     # Note --typed does not attempt to cast integers (because cat
     # runs per page and the full dataset has to be in memory to
     # inspect integer columns correctly)
