@@ -8,7 +8,6 @@ on:
       - '.github/workflows/tests.yml'
       - 'uv.lock'
       - 'pyproject.toml'
-      - 'scripts/probe_openmaps.sh'
       - 'src/bcdata/**'
       - 'tests/**'
   pull_request:
@@ -17,7 +16,6 @@ on:
       - '.github/workflows/tests.yml'
       - 'uv.lock'
       - 'pyproject.toml'
-      - 'scripts/probe_openmaps.sh'
       - 'src/bcdata/**'
       - 'tests/**'
 
@@ -67,15 +65,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra test
 
-      # record this runner's IP and whether it can reach the WFS (#264) - never fails
-      - name: Check connectivity to openmaps.gov.bc.ca
-        run: bash scripts/probe_openmaps.sh 1
+      # record the runner's IP, to check whether refused connections follow runner IPs
+      # (#264). Same lookup as bcgov/actions-openshift's runner reachability probe
+      - name: Runner IP
+        run: |
+          echo "runner IP: $(curl -sS --max-time 20 https://api.ipify.org 2>/dev/null || echo unknown)"
 
       # no -x: a refused connection in one test should not hide the other results.
       # No pytest reruns: bcdata itself retries failed requests for several minutes
       # (RETRY_POLICY). The time limit stops a runner that is blocked for the whole
-      # job from waiting through every test's retries (a timeout counts as a failure,
-      # so the probe below still runs).
+      # job from waiting through every test's retries.
       # log_cli shows warnings (eg each retried request and its cause) as they happen,
       # even for tests that pass; --durations lists where the time went (#264)
       - name: Run tests
@@ -86,8 +85,3 @@ jobs:
           -o log_cli_format="%(asctime)s %(levelname)s %(name)s: %(message)s"
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
-
-      # if tests fail, keep probing for 5 minutes to see how long refusals last (#264)
-      - name: Probe openmaps.gov.bc.ca after a failure
-        if: failure()
-        run: bash scripts/probe_openmaps.sh 15 20
