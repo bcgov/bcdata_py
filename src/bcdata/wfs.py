@@ -1,8 +1,10 @@
+import errno
 import functools
 import json
 import logging
 import math
 import os
+import socket
 import sys
 import tempfile
 import warnings
@@ -95,11 +97,42 @@ def _is_retryable(exc):
     Returning a float instead of True overrides the default backoff, which
     is used to honour a 429 response's server-specified retry delay.
     """
+    if _network_unavailable(exc):
+        # fail fast: retrying for minutes will not help a machine with no network
+        log.error(f"No network (DNS lookup failed or network unreachable), not retrying: {exc!r}")
+        return False
     retry = _retry_decision(exc)
-    if retry:
-        # stamina's own retry log does not say what failed (eg a refused connection)
+    if retry and not isinstance(exc, requests.HTTPError):
+        # stamina's own retry log does not say what failed (eg a refused connection).
+        # HTTP errors are already logged where the response is checked
         log.warning(f"Request to DataBC failed: {exc!r}")
     return retry
+
+
+def _network_unavailable(exc):
+    """Return True if exc shows this machine has no usable network.
+
+    That is, a DNS lookup failed (socket.gaierror) or the OS reports that no
+    network is reachable (ENETUNREACH) - as opposed to a server refusing or not
+    answering connections, which is worth retrying (#264). "No route to host"
+    (EHOSTUNREACH) is not included, as a firewall blocking a client can cause it.
+    The causes are found by walking the exception chain, eg ConnectionError ->
+    MaxRetryError -> NameResolutionError -> gaierror.
+    """
+    seen = set()
+    stack = [exc]
+    while stack:
+        e = stack.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        if isinstance(e, socket.gaierror):
+            return True
+        if isinstance(e, OSError) and e.errno == errno.ENETUNREACH:
+            return True
+        stack += [getattr(e, "reason", None), e.__cause__, e.__context__]
+        stack += [a for a in getattr(e, "args", ()) if isinstance(a, BaseException)]
+    return False
 
 
 def _retry_decision(exc):

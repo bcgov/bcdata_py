@@ -71,9 +71,14 @@ jobs:
       - name: Check connectivity to openmaps.gov.bc.ca
         run: bash scripts/probe_openmaps.sh 1
 
-      # no -x: a refused connection in one test should not hide the other results
+      # no -x: a refused connection in one test should not hide the other results.
+      # No pytest reruns: bcdata itself retries failed requests for several minutes
+      # (RETRY_POLICY). The time limit stops a runner that is blocked for the whole
+      # job from waiting through every test's retries (a timeout counts as a failure,
+      # so the probe below still runs).
       - name: Run tests
-        run: uv run pytest -v -rxXs --reruns 2 --reruns-delay 15
+        timeout-minutes: 45
+        run: uv run pytest -v -rxXs
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
 

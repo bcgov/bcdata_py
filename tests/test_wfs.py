@@ -262,3 +262,45 @@ def test_request_capabilities_retries_refused_connection():
 def test_bcdc_requests_retry_refused_connection():
     _assert_retries_refused_connection(lambda: bcdata.bcdc._package_show(AIRPORTS_PACKAGE))
     _assert_retries_refused_connection(lambda: bcdata.bcdc._table_definition(AIRPORTS_TABLE))
+
+
+def _connection_error(cause):
+    """A requests ConnectionError shaped like a real one, with cause at the root
+
+    eg ConnectionError -> MaxRetryError -> NewConnectionError -> gaierror
+    """
+    import urllib3
+
+    new_connection = urllib3.exceptions.NewConnectionError(None, f"failed: {cause}")
+    new_connection.__cause__ = cause
+    return requests.ConnectionError(urllib3.exceptions.MaxRetryError(None, "/", new_connection))
+
+
+def test_no_network_is_not_retried():
+    """fail fast when DNS lookup fails or no network is reachable"""
+    import errno
+    import socket
+
+    dns = _connection_error(socket.gaierror(-2, "Name or service not known"))
+    unreachable = _connection_error(OSError(errno.ENETUNREACH, "Network is unreachable"))
+    assert bcdata.wfs._is_retryable(dns) is False
+    assert bcdata.wfs._is_retryable(unreachable) is False
+
+
+def test_refused_connection_is_retried():
+    import errno
+
+    refused = _connection_error(ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"))
+    assert bcdata.wfs._is_retryable(refused) is True
+
+
+def test_request_fails_fast_without_network():
+    import socket
+
+    WFS = bcdata.wfs.BCWFS()
+    dns = _connection_error(socket.gaierror(-2, "Name or service not known"))
+    with requests_mock.mock() as m, stamina.set_testing(True, attempts=3):
+        m.get(requests_mock.ANY, exc=dns)
+        with pytest.raises(requests.ConnectionError):
+            WFS._request(WFS.wfs_url)
+        assert m.call_count == 1
