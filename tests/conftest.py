@@ -1,3 +1,6 @@
+# pytest loads conftest.py automatically (the name is required). Fixtures defined
+# here are available to every test in tests/ without importing them, and autouse
+# fixtures run for every test without being requested.
 import functools
 
 import pytest
