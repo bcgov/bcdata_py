@@ -44,7 +44,7 @@ only because GitHub redirects the old repository name to this one.
 
 If the redirect stops working or if `data/primary_keys.json` needs to be removed from main,
 a repo containing only `data/primary_keys.json` on `main` (plus a README description linking
-here) could be added.  Old installs would then fetch that file from that repo directly.
+here) could be added. Old installs would then fetch that file from that repo directly.
 
 Default to just retaining the file while the redirect works - all old issue / PR / pypi links
 are also redirected. It isn't worth breaking these linkages unless necessary.
