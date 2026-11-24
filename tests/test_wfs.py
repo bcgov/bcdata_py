@@ -16,6 +16,15 @@ STREAMS_TABLE = "whse_basemapping.fwa_stream_networks_sp"
 WELLS_TABLE = "whse_water_management.gw_water_wells_wrbc_svw"
 
 
+def _wfs_without_network():
+    """A BCWFS for testing request methods, created without requesting capabilities"""
+    WFS = bcdata.wfs.BCWFS.__new__(bcdata.wfs.BCWFS)
+    WFS.wfs_url = "https://openmaps.gov.bc.ca/geo/pub/wfs"
+    WFS.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows?service=WFS&request=Getcapabilities"
+    WFS.request_headers = {"User-Agent": "bcdata.py tests"}
+    return WFS
+
+
 @pytest.fixture
 def no_retries():
     """Deactivate retries for tests that mock failing responses, so they do not wait.
@@ -28,17 +37,21 @@ def no_retries():
 
 
 def test_http_error_502(no_retries):
+    # request a feature page directly, so the test does not depend on cached
+    # capabilities (BCWFS() would otherwise request them, and get the mocked error)
+    WFS = _wfs_without_network()
     with requests_mock.mock() as m:
         m.get(requests_mock.ANY, status_code=502)
         with pytest.raises(requests.HTTPError):
-            bcdata.get_data(AIRPORTS_TABLE)
+            WFS._request(WFS.wfs_url)
 
 
 def test_http_error_404(no_retries):
+    WFS = _wfs_without_network()
     with requests_mock.mock() as m:
         m.get(requests_mock.ANY, status_code=404)
         with pytest.raises(bcdata.wfs.ServiceException):
-            bcdata.get_data(AIRPORTS_TABLE)
+            WFS._request(WFS.wfs_url)
 
 
 def _http_error(status_code):
@@ -245,17 +258,17 @@ def _assert_retries_refused_connection(call):
 
 
 def test_request_retries_refused_connection():
-    WFS = bcdata.wfs.BCWFS()
+    WFS = _wfs_without_network()
     _assert_retries_refused_connection(lambda: WFS._request(WFS.wfs_url))
 
 
 def test_request_schema_retries_refused_connection():
-    WFS = bcdata.wfs.BCWFS()
+    WFS = _wfs_without_network()
     _assert_retries_refused_connection(lambda: WFS._request_schema(AIRPORTS_TABLE))
 
 
 def test_request_capabilities_retries_refused_connection():
-    WFS = bcdata.wfs.BCWFS()
+    WFS = _wfs_without_network()
     _assert_retries_refused_connection(WFS._request_capabilities)
 
 
@@ -297,7 +310,7 @@ def test_refused_connection_is_retried():
 def test_request_fails_fast_without_network():
     import socket
 
-    WFS = bcdata.wfs.BCWFS()
+    WFS = _wfs_without_network()
     dns = _connection_error(socket.gaierror(-2, "Name or service not known"))
     with requests_mock.mock() as m, stamina.set_testing(True, attempts=3):
         m.get(requests_mock.ANY, exc=dns)
