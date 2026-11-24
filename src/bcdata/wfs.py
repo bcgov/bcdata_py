@@ -393,10 +393,6 @@ class BCWFS:
         r = self._request(self.wfs_url, params=payload, silent=True)
         return int(ET.fromstring(r.text).attrib["numberMatched"])
 
-    def _request_features(self, url, silent=False):
-        """Submit a getfeature request to DataBC WFS and return features"""
-        return self._request(url, silent=silent).json()["features"]
-
     def _request_featurecollection(self, url, silent=False):
         """Submit a getfeature request to DataBC WFS and return feature collection"""
         return self._request(url, silent=silent).json()
