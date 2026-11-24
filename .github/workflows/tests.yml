@@ -76,9 +76,14 @@ jobs:
       # (RETRY_POLICY). The time limit stops a runner that is blocked for the whole
       # job from waiting through every test's retries (a timeout counts as a failure,
       # so the probe below still runs).
+      # log_cli shows warnings (eg each retried request and its cause) as they happen,
+      # even for tests that pass; --durations lists where the time went (#264)
       - name: Run tests
         timeout-minutes: 45
-        run: uv run pytest -v -rxXs
+        run: >-
+          uv run pytest -v -rxXs --durations=10
+          -o log_cli=true -o log_cli_level=WARNING
+          -o log_cli_format="%(asctime)s %(levelname)s %(name)s: %(message)s"
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
 
