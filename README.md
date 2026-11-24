@@ -97,7 +97,10 @@ Options:
   --help     Show this message and exit.
 
 Commands:
-  bc2pg    [DEPRECATED] Load a DataBC WFS layer to a postgres db
+  bc2pg    Load a DataBC WFS layer to a postgres db (DEPRECATED: Load data to
+           PostgreSQL with ogr2ogr instead (eg from bcdata cat, or from
+           GeoParquet files written by bcdata parquet) - see
+           https://github.com/bcgov/bcdata_py/issues/270)
   cat      Write DataBC features to stdout as GeoJSON feature objects.
   dump     Write DataBC features to stdout as GeoJSON feature collection.
   info     Print basic metadata about a DataBC WFS layer as JSON.
@@ -112,13 +115,10 @@ $ bcdata bc2pg --help
 
 Usage: bcdata bc2pg [OPTIONS] DATASET
 
-  [DEPRECATED] Load a DataBC WFS layer to a postgres db
-
-   $ bcdata bc2pg whse_imagery_and_base_maps.gsr_airports_svw
-
-  Deprecated and will be removed in a future release. Load data to PostgreSQL
-  with ogr2ogr instead (eg from bcdata cat, or from GeoParquet files written
-  by bcdata parquet) - see https://github.com/bcgov/bcdata_py/issues/270
+  Load a DataBC WFS layer to a postgres db (DEPRECATED: Load data to
+  PostgreSQL with ogr2ogr instead (eg from bcdata cat, or from GeoParquet
+  files written by bcdata parquet) - see
+  https://github.com/bcgov/bcdata_py/issues/270)
 
 Options:
   -db, --db_url TEXT              Target database url, defaults to

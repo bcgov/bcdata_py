@@ -7,6 +7,7 @@ import sys
 import click
 
 import bcdata
+from bcdata.bc2pg import DEPRECATION_ADVICE as BC2PG_DEPRECATION_ADVICE
 from bcdata.database import Database
 
 LOG_FORMAT = "%(asctime)s:%(levelname)s:%(name)s: %(message)s"
@@ -372,7 +373,7 @@ def parquet(
         raise click.ClickException(str(e)) from e
 
 
-@cli.command()
+@cli.command(deprecated=BC2PG_DEPRECATION_ADVICE)
 @click.argument("dataset", type=click.STRING, shell_complete=complete_dataset_names)
 @click.option(
     "--db_url",
@@ -448,16 +449,9 @@ def bc2pg(
     verbose,
     quiet,
 ):
-    """[DEPRECATED] Load a DataBC WFS layer to a postgres db
-
-    \b
-     $ bcdata bc2pg whse_imagery_and_base_maps.gsr_airports_svw
-
-    Deprecated and will be removed in a future release. Load data to
-    PostgreSQL with ogr2ogr instead (eg from bcdata cat, or from GeoParquet
-    files written by bcdata parquet) - see
-    https://github.com/bcgov/bcdata_py/issues/270
-    """
+    """Load a DataBC WFS layer to a postgres db"""
+    # (no example in the docstring: click appends the deprecation notice to its last
+    # paragraph, which would join an example line)
     # for this command, default to INFO level logging
     verbosity = verbose - quiet
     log_level = max(10, 20 - 10 * verbosity)
