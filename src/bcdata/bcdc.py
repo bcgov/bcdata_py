@@ -5,7 +5,7 @@ import requests
 import stamina
 
 import bcdata
-from bcdata.wfs import RETRY_POLICY, RETRYABLE_STATUS_CODES, _is_retryable
+from bcdata.wfs import REQUEST_TIMEOUT, RETRY_POLICY, RETRYABLE_STATUS_CODES, _is_retryable
 
 log = logging.getLogger(__name__)
 
@@ -16,10 +16,8 @@ class ServiceException(Exception):
     pass
 
 
-# Same timeout/retry policy as the WFS requests (see bcdata.wfs):
-# no connect timeout, bounded read timeout so a hung server can't block forever,
-# retry only on transient errors (5xx, 429, connection errors, timeouts)
-REQUEST_TIMEOUT = (None, 65)
+# Same timeouts and retry policy as the WFS requests (REQUEST_TIMEOUT, RETRY_POLICY
+# in bcdata.wfs): retry only on transient errors (5xx, 429, connection errors, timeouts)
 
 
 def _check_response(r):

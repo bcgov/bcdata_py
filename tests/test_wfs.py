@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 import requests
 import requests_mock
@@ -26,6 +28,17 @@ def _wfs_without_network():
 
 
 @pytest.fixture
+def quiet_logs(caplog):
+    """Silence bcdata and stamina logging in tests that simulate failed requests.
+
+    CI prints warnings live (log_cli) to show real retries (#264); without this,
+    simulated failures log the same "Request to DataBC failed" lines.
+    """
+    caplog.set_level(logging.CRITICAL + 1, logger="bcdata")
+    caplog.set_level(logging.CRITICAL + 1, logger="stamina")
+
+
+@pytest.fixture
 def no_retries():
     """Deactivate retries for tests that mock failing responses, so they do not wait.
 
@@ -36,7 +49,7 @@ def no_retries():
     stamina.set_active(True)
 
 
-def test_http_error_502(no_retries):
+def test_http_error_502(no_retries, quiet_logs):
     # request a feature page directly, so the test does not depend on cached
     # capabilities (BCWFS() would otherwise request them, and get the mocked error)
     WFS = _wfs_without_network()
@@ -46,7 +59,7 @@ def test_http_error_502(no_retries):
             WFS._request(WFS.wfs_url)
 
 
-def test_http_error_404(no_retries):
+def test_http_error_404(no_retries, quiet_logs):
     WFS = _wfs_without_network()
     with requests_mock.mock() as m:
         m.get(requests_mock.ANY, status_code=404)
@@ -72,7 +85,7 @@ def test_is_retryable_4xx_not_retried():
         assert bcdata.wfs._is_retryable(_http_error(code)) is False
 
 
-def test_is_retryable_connection_and_timeout_errors():
+def test_is_retryable_connection_and_timeout_errors(quiet_logs):
     """Connection/timeout failures are also worth retrying, not just bad HTTP responses"""
     assert bcdata.wfs._is_retryable(requests.ConnectionError()) is True
     assert bcdata.wfs._is_retryable(requests.Timeout()) is True
@@ -257,22 +270,22 @@ def _assert_retries_refused_connection(call):
         assert m.call_count == attempts
 
 
-def test_request_retries_refused_connection():
+def test_request_retries_refused_connection(quiet_logs):
     WFS = _wfs_without_network()
     _assert_retries_refused_connection(lambda: WFS._request(WFS.wfs_url))
 
 
-def test_request_schema_retries_refused_connection():
+def test_request_schema_retries_refused_connection(quiet_logs):
     WFS = _wfs_without_network()
     _assert_retries_refused_connection(lambda: WFS._request_schema(AIRPORTS_TABLE))
 
 
-def test_request_capabilities_retries_refused_connection():
+def test_request_capabilities_retries_refused_connection(quiet_logs):
     WFS = _wfs_without_network()
     _assert_retries_refused_connection(WFS._request_capabilities)
 
 
-def test_bcdc_requests_retry_refused_connection():
+def test_bcdc_requests_retry_refused_connection(quiet_logs):
     _assert_retries_refused_connection(lambda: bcdata.bcdc._package_show(AIRPORTS_PACKAGE))
     _assert_retries_refused_connection(lambda: bcdata.bcdc._table_definition(AIRPORTS_TABLE))
 
@@ -289,7 +302,7 @@ def _connection_error(cause):
     return requests.ConnectionError(urllib3.exceptions.MaxRetryError(None, "/", new_connection))
 
 
-def test_no_network_is_not_retried():
+def test_no_network_is_not_retried(quiet_logs):
     """fail fast when DNS lookup fails or no network is reachable"""
     import errno
     import socket
@@ -300,14 +313,14 @@ def test_no_network_is_not_retried():
     assert bcdata.wfs._is_retryable(unreachable) is False
 
 
-def test_refused_connection_is_retried():
+def test_refused_connection_is_retried(quiet_logs):
     import errno
 
     refused = _connection_error(ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"))
     assert bcdata.wfs._is_retryable(refused) is True
 
 
-def test_request_fails_fast_without_network():
+def test_request_fails_fast_without_network(quiet_logs):
     import socket
 
     WFS = _wfs_without_network()
@@ -317,3 +330,14 @@ def test_request_fails_fast_without_network():
         with pytest.raises(requests.ConnectionError):
             WFS._request(WFS.wfs_url)
         assert m.call_count == 1
+
+
+def test_requests_use_connect_timeout(quiet_logs):
+    """a dropped connection fails after REQUEST_TIMEOUT[0] seconds, not the OS's ~2 minutes"""
+    assert bcdata.wfs.REQUEST_TIMEOUT[0] is not None
+    WFS = _wfs_without_network()
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, json={})
+        WFS._request(WFS.wfs_url)
+        bcdata.bcdc._package_show(AIRPORTS_PACKAGE)
+    assert [r.timeout for r in m.request_history] == [bcdata.wfs.REQUEST_TIMEOUT] * 2

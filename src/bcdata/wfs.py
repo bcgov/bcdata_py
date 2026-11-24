@@ -69,6 +69,16 @@ RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 # with a 504.
 RETRY_POLICY = {"attempts": 8, "timeout": 600, "wait_initial": 5, "wait_max": 60}
 
+# (connect, read) timeouts for requests to DataBC services, in seconds.
+# Connections from GitHub-hosted runners are also silently dropped at times (#264).
+# With no connect timeout the OS gives up only after ~127s (Linux resends the
+# connection request at 1, 3, 7, 15, 31 and 63s), so each dropped attempt costs
+# ~2 minutes. 30s still allows 5 resends - a 10s connect timeout tripped on slow
+# runner handshakes (#246), which are likely early resends being dropped - and then
+# fails, so the request is retried on a fresh connection. The read timeout catches
+# a connected server that stops responding.
+REQUEST_TIMEOUT = (30, 65)
+
 
 def _rate_limit_backoff(response):
     """Return the server-specified backoff (seconds) for a 429 response, if given.
@@ -247,14 +257,10 @@ class BCWFS:
         last 30s or more (#264), and the WFS gateway itself can take up to ~60s
         to fail with a 504, so retries continue for several minutes.
 
-        No connect timeout is set (matching requests/urllib3's own default
-        of blocking until the OS gives up) - a hardcoded 10s connect timeout
-        was observed tripping on GitHub-hosted runners, whose handshake to
-        openmaps.gov.bc.ca can exceed that (see issue #246). The read
-        timeout stays bounded so a connected-but-hanging server is still
-        caught.
+        Timeouts are set by REQUEST_TIMEOUT (see the notes there on why the
+        connect timeout is 30s).
         """
-        r = requests.get(url, params=params, headers=self.request_headers, timeout=(None, 65))
+        r = requests.get(url, params=params, headers=self.request_headers, timeout=REQUEST_TIMEOUT)
         if not silent:
             log.info(r.url)
         else:
