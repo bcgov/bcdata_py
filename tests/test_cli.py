@@ -83,6 +83,20 @@ def test_dump():
     assert len(json.loads(result.output)["features"]) == 1
 
 
+def test_dump_typed():
+    """--typed writes dates as YYYY-MM-DD and whole numbers as integers"""
+    runner = CliRunner()
+    args = ["dump", ASSESSMENTS_TABLE, "--count", "20", "--sortby", "ASSESSMENT_ID"]
+    args += ["--query", "ASSESSMENT_DATE IS NOT NULL"]
+    raw = json.loads(runner.invoke(cli, args).output)["features"][0]["properties"]
+    result = runner.invoke(cli, args + ["--typed"])
+    assert result.exit_code == 0
+    typed = json.loads(result.output)["features"][0]["properties"]
+    assert raw["ASSESSMENT_DATE"].endswith("Z")
+    assert typed["ASSESSMENT_DATE"] == raw["ASSESSMENT_DATE"][:10]
+    assert isinstance(typed["ASSESSMENT_ID"], int)
+
+
 def test_bc2pg():
     runner = CliRunner()
     result = runner.invoke(cli, ["bc2pg", AIRPORTS_TABLE, "--db_url", DB_URL])

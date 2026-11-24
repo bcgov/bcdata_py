@@ -72,7 +72,9 @@ geojson = bcdata.get_data(
 geojson
 {'type': 'FeatureCollection', 'features': [{'type': 'Feature', 'id': 'WHSE_IMAGERY_AND_BASE_MAPS.GSR_AIRPORTS_SVW.fid-f0cdbe4_16811fe142b_-6f34', 'geometry': {'type': 'Point', ...
 
-# optionally, load data as a geopandas GeoDataFrame
+# optionally, load data as a geopandas GeoDataFrame. Column types are set from the
+# table schema, as for GeoParquet output: integers are pandas' nullable Int64 (they
+# stay integers when there are nulls) and dates are datetime.date values
 gdf = bcdata.get_data(
     'bc-airports',
     query="AIRPORT_NAME='Terrace (Northwest Regional) Airport'",
@@ -195,6 +197,9 @@ Options:
   -s, --sortby TEXT               Name of sort field
   -l, --lowercase                 Write column/properties names as lowercase
   -m, --promote-to-multi          Promote features to multipart
+  --typed                         Set property types from the table schema:
+                                  dates as YYYY-MM-DD, whole numbers as
+                                  integers
   -v, --verbose                   Increase verbosity.
   -q, --quiet                     Decrease verbosity.
   --help                          Show this message and exit.
