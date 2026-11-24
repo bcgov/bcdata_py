@@ -27,7 +27,6 @@ dependencies = [
     "geoalchemy2",
     "geoarrow-pyarrow",
     "geopandas",
-    "owslib",
     "psycopg[binary]",
     "pyarrow>=21",
     "requests",

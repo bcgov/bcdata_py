@@ -78,13 +78,15 @@ def test_query(tmp_path):
     assert df["airport_name"].iloc[0] == "Terrace (Northwest Regional) Airport"
 
 
-def test_paged_row_groups(tmp_path):
+def test_paged_row_groups(tmp_path, small_pages):
     """multiple WFS pages are combined, sorted and split into row groups"""
     out = tmp_path / "pscis.parquet"
-    bcdata.to_parquet(ASSESSMENTS_TABLE, str(out), count=12000, row_group_size=5000)
+    # 3 requests, and row groups that do not line up with the pages
+    count = small_pages * 2 + 5
+    bcdata.to_parquet(ASSESSMENTS_TABLE, str(out), count=count, row_group_size=12)
     md = pq.read_metadata(out)
-    assert md.num_rows == 12000
-    assert [md.row_group(i).num_rows for i in range(md.num_row_groups)] == [5000, 5000, 2000]
+    assert md.num_rows == count
+    assert [md.row_group(i).num_rows for i in range(md.num_row_groups)] == [12, 12, 1]
     df = gpd.read_parquet(out)
     assert df["assessment_id"].is_unique
 

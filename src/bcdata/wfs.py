@@ -18,9 +18,6 @@ import geopandas as gpd
 import pandas as pd
 import requests
 import stamina
-from owslib.feature import schema as wfs_schema
-from owslib.feature import wfs200
-from owslib.wfs import WebFeatureService
 from shapely.geometry.linestring import LineString
 from shapely.geometry.multilinestring import MultiLineString
 from shapely.geometry.multipoint import MultiPoint
@@ -82,6 +79,9 @@ REQUEST_TIMEOUT = (30, 65)
 
 # one requests.Session per thread (sessions are not guaranteed to be thread safe)
 _sessions = threading.local()
+
+# tables described per DescribeFeatureType request, to keep request URLs short
+SCHEMAS_PER_REQUEST = 50
 
 
 def _session():
@@ -176,17 +176,66 @@ def _retry_decision(exc):
     return isinstance(exc, (requests.ConnectionError, requests.Timeout))
 
 
+XSD = "{http://www.w3.org/2001/XMLSchema}"
+WFS_NS = "{http://www.opengis.net/wfs/2.0}"
+OWS_NS = "{http://www.opengis.net/ows/1.1}"
+
+# GML property types of geometry columns, and the geometry type each is reported as.
+# The names are those owslib gave (bcdata used it to parse schemas), kept
+# because they are user facing: `bcdata info` prints the schema, and the README shows
+# "geometry": "GeometryCollection". Cached schemas use them too.
+GEOMETRY_TYPES = {
+    "PointPropertyType": "Point",
+    "PolygonPropertyType": "Polygon",
+    "LineStringPropertyType": "LineString",
+    "MultiPointPropertyType": "MultiPoint",
+    "MultiLineStringPropertyType": "MultiLineString",
+    "MultiPolygonPropertyType": "MultiPolygon",
+    "MultiGeometryPropertyType": "MultiGeometry",
+    "GeometryPropertyType": "GeometryCollection",
+    "SurfacePropertyType": "3D Polygon",
+    "MultiSurfacePropertyType": "3D MultiPolygon",
+}
+
+
 @functools.lru_cache(maxsize=1)
-def _parse_table_names(ows_url, capabilities):
+def _parse_table_names(capabilities):
     """Parse table names from capabilities xml.
 
     Parsing is slow (~50ms) and validate_name/list_tables are called several times
     per request, so the result is cached for as long as the capabilities xml is unchanged.
     """
+    root = ET.fromstring(capabilities)
     return tuple(
-        i.removeprefix("pub:")
-        for i in WebFeatureService(ows_url, version="2.0.0", xml=capabilities).contents
+        name.text.removeprefix("pub:")
+        for name in root.iterfind(f"{WFS_NS}FeatureTypeList/{WFS_NS}FeatureType/{WFS_NS}Name")
     )
+
+
+def _parse_schema(complex_type):
+    """Return the schema of a table from the xsd:complexType describing it.
+
+    {"properties": {column: xsd type}, "required": [non-nillable columns],
+     "geometry": geometry type, "geometry_column": column}
+    """
+    schema = {"properties": {}, "required": [], "geometry": None}
+    for element in complex_type.iter(XSD + "element"):
+        name = element.get("name")
+        data_type = element.get("type")
+        if name is None or data_type is None:
+            # DataBC types every column inline. A column declared another way (ref=,
+            # or a nested xsd:simpleType) would otherwise be silently left out
+            column = name or element.get("ref") or ET.tostring(element, encoding="unicode")
+            raise ServiceException(f"Cannot parse type of column {column}")
+        data_type = data_type.split(":")[-1]
+        if data_type in GEOMETRY_TYPES:
+            schema["geometry"] = GEOMETRY_TYPES[data_type]
+            schema["geometry_column"] = name
+        else:
+            schema["properties"][name] = data_type
+        if element.get("nillable", "false") == "false":
+            schema["required"].append(name)
+    return schema
 
 
 class BCWFS:
@@ -194,7 +243,7 @@ class BCWFS:
 
     def __init__(self, refresh=False):
         self.wfs_url = "https://openmaps.gov.bc.ca/geo/pub/wfs"
-        self.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows?service=WFS&request=Getcapabilities"
+        self.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows"
 
         # point to cache path
         if "BCDATA_CACHE" in os.environ:
@@ -215,16 +264,13 @@ class BCWFS:
         p.mkdir(parents=True, exist_ok=True)
         self.refresh = refresh
         self.cache_refresh_days = 30
+        self.request_headers = {"User-Agent": f"bcdata.py ({bcdata.__version__})"}
         self.capabilities = self.get_capabilities()
         # get pagesize from xml using the xpath from https://github.com/bcgov/bcdata/
-        countdefault = ET.fromstring(self.capabilities).findall(
-            ".//{http://www.opengis.net/ows/1.1}Constraint[@name='CountDefault']"
-        )[0]
-        self.pagesize = int(
-            countdefault.find("ows:DefaultValue", {"ows": "http://www.opengis.net/ows/1.1"}).text
+        countdefault = ET.fromstring(self.capabilities).find(
+            f".//{OWS_NS}Constraint[@name='CountDefault']/{OWS_NS}DefaultValue"
         )
-
-        self.request_headers = {"User-Agent": f"bcdata.py ({bcdata.__version__})"}
+        self.pagesize = int(countdefault.text)
 
     def _write_cache_file(self, cache_file, text):
         """Write text to a cache file atomically (temp file in cache dir, then replace)"""
@@ -237,35 +283,58 @@ class BCWFS:
             os.unlink(tmp)
             raise
 
-    def check_cached_file(self, cache_file):
-        """Return true if the file is empty / does not exist / is more than n days old"""
-        cache_file = os.path.join(self.cache_path, cache_file)
-        if not os.path.exists(os.path.join(cache_file)):
+    def _cache_is_stale(self, cache_file):
+        """Return True if a cache file should be requested again.
+
+        That is, if refresh was asked for, or the file is missing, empty, or more
+        than cache_refresh_days old.
+        """
+        if self.refresh:
             return True
-        else:
-            mod_date = datetime.fromtimestamp(os.path.getmtime(cache_file), tz=UTC)
-            # if file older than specified days or empty, return true
-            return (
-                mod_date < (datetime.now(tz=UTC) - timedelta(days=self.cache_refresh_days))
-                or os.stat(cache_file).st_size == 0
-            )
-
-    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
-    def _request_schema(self, table):
-        schema = wfs_schema.get_schema(
-            "https://openmaps.gov.bc.ca/geo/pub/ows",
-            typename=table,
-            version="2.0.0",
+        path = os.path.join(self.cache_path, cache_file)
+        if not os.path.exists(path):
+            return True
+        mod_date = datetime.fromtimestamp(os.path.getmtime(path), tz=UTC)
+        return (
+            mod_date < (datetime.now(tz=UTC) - timedelta(days=self.cache_refresh_days))
+            or os.stat(path).st_size == 0
         )
-        return schema
 
-    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
+    def _request_xml(self, request, **params):
+        """Make a WFS request that returns an xml document (GetCapabilities,
+        DescribeFeatureType), and return the parsed document and its raw bytes.
+
+        The service can report errors as an ExceptionReport document rather than
+        with an error status, so that is raised as a ServiceException.
+        """
+        params = {"service": "WFS", "version": "2.0.0", "request": request, **params}
+        r = self._request(self.ows_url, params=params, silent=True)
+        root = ET.fromstring(r.content)
+        if root.tag.endswith("ExceptionReport"):
+            raise ServiceException(r.text)
+        return root, r.content
+
+    def _request_schemas(self, tables):
+        """Request the schemas of several tables in one DescribeFeatureType request.
+
+        Returns {table: schema}, see _parse_schema.
+        """
+        root, _ = self._request_xml("DescribeFeatureType", typeNames=",".join(tables))
+        # each table is a top level element, typed by a complexType listing its columns
+        types = {e.get("name"): e.get("type") for e in root.findall(XSD + "element")}
+        complex_types = {c.get("name"): c for c in root.findall(XSD + "complexType")}
+        schemas = {}
+        for table in tables:
+            if table not in types:
+                raise ServiceException(f"DescribeFeatureType returned no schema for {table}")
+            schemas[table] = _parse_schema(complex_types[types[table].split(":")[-1]])
+        return schemas
+
     def _request_capabilities(self):
-        capabilities = ET.tostring(
-            wfs200.WebFeatureService_2_0_0(self.ows_url, "2.0.0", None, False)._capabilities,
-            encoding="unicode",
-        )
-        return capabilities
+        """Request the capabilities document, which lists every table."""
+        _, content = self._request_xml("GetCapabilities")
+        # the document is utf-8 (and declares it), whatever the response headers say
+        return content.decode("utf-8")
 
     @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request(self, url, params=None, silent=False):
@@ -359,8 +428,7 @@ class BCWFS:
           - $BCDATA_CACHE environment variable
           - default (~/.bcdata)
         """
-        # request capabilities if cached file is old or refresh is specified
-        if self.check_cached_file("capabilities.xml") or self.refresh:
+        if self._cache_is_stale("capabilities.xml"):
             self._write_cache_file("capabilities.xml", self._request_capabilities())
         # load cached xml from file
         with open(os.path.join(self.cache_path, "capabilities.xml"), "r") as f:
@@ -380,14 +448,25 @@ class BCWFS:
         )
         return count
 
+    def _get_schemas(self, tables):
+        """Return {table: schema} for several tables, requesting them in batches.
+
+        Describing up to SCHEMAS_PER_REQUEST tables per request means checking many
+        tables makes a few requests rather than one per table.
+        """
+        stale = [t for t in tables if self._cache_is_stale(t)]
+        for i in range(0, len(stale), SCHEMAS_PER_REQUEST):
+            for table, schema in self._request_schemas(stale[i : i + SCHEMAS_PER_REQUEST]).items():
+                self._write_cache_file(table, json.dumps(schema, indent=4))
+        # load cached schemas
+        schemas = {}
+        for table in tables:
+            with open(os.path.join(self.cache_path, table), "r") as f:
+                schemas[table] = json.loads(f.read())
+        return schemas
+
     def get_schema(self, table):
-        # download table definition if file is > 30 days old, empty, or refresh is specified
-        if self.check_cached_file(table) or self.refresh:
-            schema = self._request_schema(table)
-            self._write_cache_file(table, json.dumps(schema, indent=4))
-        # load cached schema
-        with open(os.path.join(self.cache_path, table), "r") as f:
-            return json.loads(f.read())
+        return self._get_schemas([table])[table]
 
     def get_sortkey(self, table):
         """Check data for unique columns available for sorting paged requests"""
@@ -415,7 +494,7 @@ class BCWFS:
 
     def list_tables(self):
         """read and parse capabilities xml, which lists all tables available"""
-        return list(_parse_table_names(self.ows_url, self.capabilities))
+        return list(_parse_table_names(self.capabilities))
 
     def validate_name(self, dataset):
         """Check wfs/cache and the bcdc api to see if dataset name is valid"""

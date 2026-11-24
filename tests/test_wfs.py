@@ -22,7 +22,7 @@ def _wfs_without_network():
     """A BCWFS for testing request methods, created without requesting capabilities"""
     WFS = bcdata.wfs.BCWFS.__new__(bcdata.wfs.BCWFS)
     WFS.wfs_url = "https://openmaps.gov.bc.ca/geo/pub/wfs"
-    WFS.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows?service=WFS&request=Getcapabilities"
+    WFS.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows"
     WFS.request_headers = {"User-Agent": "bcdata.py tests"}
     return WFS
 
@@ -156,10 +156,6 @@ def test_get_sortkey_unknown():
 def test_get_data_asgdf():
     gdf = bcdata.get_data(UTMZONES_KEY, query="UTM_ZONE=10", as_gdf=True)
     assert type(gdf) is GeoDataFrame
-
-
-def test_get_data_asgdf_crs():
-    gdf = bcdata.get_data(UTMZONES_KEY, query="UTM_ZONE=10", as_gdf=True)
     assert gdf.crs == "EPSG:3005"
 
 
@@ -193,12 +189,14 @@ def test_get_data_crs():
     assert data["crs"]["properties"]["name"] == "urn:ogc:def:crs:EPSG::3005"
 
 
-# this presumes the page size will always be less than the total number of wells
-def test_get_data_paged_count():
-    wfs = bcdata.wfs.BCWFS()
-    count = wfs.pagesize + 100
+def test_get_data_paged_count(small_pages):
+    # 3 requests: two full pages and a partial one
+    count = small_pages * 2 + 5
     data = bcdata.get_data(WELLS_TABLE, count=count)
     assert len(data["features"]) == count
+    # pages are sorted, so they do not overlap
+    ids = [f["properties"]["OBJECTID"] for f in data["features"]]
+    assert len(set(ids)) == count
 
 
 def test_get_data_sortby():
@@ -275,9 +273,9 @@ def test_request_retries_refused_connection(quiet_logs):
     _assert_retries_refused_connection(lambda: WFS._request(WFS.wfs_url))
 
 
-def test_request_schema_retries_refused_connection(quiet_logs):
+def test_request_schemas_retries_refused_connection(quiet_logs):
     WFS = _wfs_without_network()
-    _assert_retries_refused_connection(lambda: WFS._request_schema(AIRPORTS_TABLE))
+    _assert_retries_refused_connection(lambda: WFS._request_schemas([AIRPORTS_TABLE]))
 
 
 def test_request_capabilities_retries_refused_connection(quiet_logs):
@@ -397,3 +395,97 @@ def test_one_session_per_thread():
         t.join()
     assert bcdata.wfs._session() is bcdata.wfs._session()
     assert len({id(s) for s in sessions + [bcdata.wfs._session()]}) == 3
+
+
+DESCRIBE_TWO_TABLES = """<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:pub="http://delivery.openmaps.gov.bc.ca/geo/"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+  targetNamespace="http://delivery.openmaps.gov.bc.ca/geo/">
+  <xsd:complexType name="A.POINTSType"><xsd:complexContent>
+    <xsd:extension base="gml:AbstractFeatureType"><xsd:sequence>
+      <xsd:element maxOccurs="1" minOccurs="1" name="ID" nillable="false" type="xsd:decimal"/>
+      <xsd:element maxOccurs="1" minOccurs="0" name="SHAPE" nillable="true" type="gml:PointPropertyType"/>
+    </xsd:sequence></xsd:extension></xsd:complexContent></xsd:complexType>
+  <xsd:element name="A.POINTS" substitutionGroup="gml:AbstractFeature" type="pub:A.POINTSType"/>
+  <xsd:complexType name="B.AREASType"><xsd:complexContent>
+    <xsd:extension base="gml:AbstractFeatureType"><xsd:sequence>
+      <xsd:element maxOccurs="1" minOccurs="0" name="NAME" nillable="true" type="xsd:string"/>
+      <xsd:element maxOccurs="1" minOccurs="0" name="GEOMETRY" nillable="true" type="gml:GeometryPropertyType"/>
+    </xsd:sequence></xsd:extension></xsd:complexContent></xsd:complexType>
+  <xsd:element name="B.AREAS" substitutionGroup="gml:AbstractFeature" type="pub:B.AREASType"/>
+</xsd:schema>"""
+
+
+def test_request_schemas_describes_tables_in_one_request():
+    WFS = _wfs_without_network()
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, text=DESCRIBE_TWO_TABLES)
+        schemas = WFS._request_schemas(["A.POINTS", "B.AREAS"])
+    assert m.call_count == 1
+    assert m.last_request.qs["typenames"] == ["a.points,b.areas"]
+    assert schemas["A.POINTS"] == {
+        "properties": {"ID": "decimal"},
+        "required": ["ID"],
+        "geometry": "Point",
+        "geometry_column": "SHAPE",
+    }
+    assert schemas["B.AREAS"]["properties"] == {"NAME": "string"}
+    assert schemas["B.AREAS"]["geometry_column"] == "GEOMETRY"
+
+
+def test_request_schemas_missing_table():
+    WFS = _wfs_without_network()
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, text=DESCRIBE_TWO_TABLES)
+        with pytest.raises(bcdata.wfs.ServiceException, match="C.OTHER"):
+            WFS._request_schemas(["A.POINTS", "C.OTHER"])
+
+
+def test_get_schemas_batches_requests(tmp_path, monkeypatch):
+    WFS = _wfs_without_network()
+    WFS.cache_path, WFS.refresh, WFS.cache_refresh_days = str(tmp_path), False, 30
+    batches = []
+
+    def fake_request_schemas(tables):
+        batches.append(tables)
+        return {t: {"properties": {}} for t in tables}
+
+    monkeypatch.setattr(WFS, "_request_schemas", fake_request_schemas)
+    monkeypatch.setattr(bcdata.wfs, "SCHEMAS_PER_REQUEST", 2)
+    tables = ["A.ONE", "A.TWO", "A.THREE"]
+    assert set(WFS._get_schemas(tables)) == set(tables)
+    assert batches == [["A.ONE", "A.TWO"], ["A.THREE"]]
+    # cached schemas are not requested again
+    WFS._get_schemas(tables)
+    assert len(batches) == 2
+
+
+def test_request_schemas_untyped_column():
+    WFS = _wfs_without_network()
+    untyped = DESCRIBE_TWO_TABLES.replace(
+        'name="NAME" nillable="true" type="xsd:string"/>',
+        'name="NAME" nillable="true"><xsd:simpleType><xsd:restriction base="xsd:string">'
+        '<xsd:maxLength value="50"/></xsd:restriction></xsd:simpleType></xsd:element>',
+    )
+    assert untyped != DESCRIBE_TWO_TABLES
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, text=untyped)
+        with pytest.raises(bcdata.wfs.ServiceException, match="column NAME"):
+            WFS._request_schemas(["A.POINTS", "B.AREAS"])
+
+
+EXCEPTION_REPORT = """<?xml version="1.0" encoding="UTF-8"?>
+<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1" version="2.0.0">
+  <ows:Exception exceptionCode="InvalidParameterValue" locator="typeName">
+    <ows:ExceptionText>Feature type pub:C.OTHER unknown</ows:ExceptionText>
+  </ows:Exception>
+</ows:ExceptionReport>"""
+
+
+def test_request_schemas_exception_report():
+    """an ExceptionReport returned with status 200 raises the service's message"""
+    WFS = _wfs_without_network()
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, text=EXCEPTION_REPORT)
+        with pytest.raises(bcdata.wfs.ServiceException, match="C.OTHER unknown"):
+            WFS._request_schemas(["C.OTHER"])
