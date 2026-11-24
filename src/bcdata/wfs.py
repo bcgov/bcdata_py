@@ -449,7 +449,7 @@ class BCWFS:
         tables makes a few requests rather than one per table.
         """
         # download table definitions if file is > 30 days old, empty, or refresh is specified
-        stale = [t for t in tables if self.check_cached_file(t) or self.refresh]
+        stale = [t for t in tables if self.refresh or self.check_cached_file(t)]
         for i in range(0, len(stale), SCHEMAS_PER_REQUEST):
             for table, schema in self._request_schemas(stale[i : i + SCHEMAS_PER_REQUEST]).items():
                 self._write_cache_file(table, json.dumps(schema, indent=4))
