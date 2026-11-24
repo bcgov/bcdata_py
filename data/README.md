@@ -26,12 +26,17 @@ package. Edit the file here.
 
 ## primary_keys.json (deprecated)
 
-The `{table: primary_key}` lookup used by bcdata v0.18.0 and earlier. Those versions download
-it from this path on the `main` branch every time `bcdata` is imported, and the import fails
-if the download fails. **Do not move, rename or delete this file**, or installs of older
-versions will break.
+The `{table: primary_key}` lookup used by bcdata v0.10.0 to v0.18.0, which download it from
+this path on the `main` branch:
 
-Those versions download it from the repository's old location,
+- v0.12.1 to v0.18.0 download it every time `bcdata` is imported, and the import fails if the
+  download fails.
+- v0.10.0 to v0.11.0 download it only when running `bc2pg`. If the download fails, they log a
+  warning and load the table without a primary key.
+
+**Do not move, rename or delete this file**, or installs of older versions will break.
+
+All of these versions download it from the repository's old location,
 `https://raw.githubusercontent.com/smnorris/bcdata/main/data/primary_keys.json`, which works
 only because GitHub redirects the old repository name to this one. GitHub stops redirecting
 if a repository is created at the old name, so **do not create a repository at
