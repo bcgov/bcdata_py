@@ -16,19 +16,25 @@ STREAMS_TABLE = "whse_basemapping.fwa_stream_networks_sp"
 WELLS_TABLE = "whse_water_management.gw_water_wells_wrbc_svw"
 
 
-@pytest.fixture(autouse=True, scope="session")
-def deactivate_retries():
+@pytest.fixture
+def no_retries():
+    """Deactivate retries for tests that mock failing responses, so they do not wait.
+
+    Only these tests: live tests run with retries active, as bcdata is used.
+    """
     stamina.set_active(False)
+    yield
+    stamina.set_active(True)
 
 
-def test_http_error_502():
+def test_http_error_502(no_retries):
     with requests_mock.mock() as m:
         m.get(requests_mock.ANY, status_code=502)
         with pytest.raises(requests.HTTPError):
             bcdata.get_data(AIRPORTS_TABLE)
 
 
-def test_http_error_404():
+def test_http_error_404(no_retries):
     with requests_mock.mock() as m:
         m.get(requests_mock.ANY, status_code=404)
         with pytest.raises(bcdata.wfs.ServiceException):
@@ -218,3 +224,41 @@ def test_get_count_uses_provided_geom_column(monkeypatch):
     monkeypatch.setattr(WFS, "_request_count", fake_request_count)
     WFS.get_count(AIRPORTS_TABLE, geom_column="MY_GEOM")
     assert calls["geom_column"] == "MY_GEOM"
+
+
+def test_retry_policy_spans_minutes():
+    """refusals lasting 30s or more must not exhaust retries (#264)"""
+    p = bcdata.wfs.RETRY_POLICY
+    waits = [min(p["wait_initial"] * 2**i, p["wait_max"]) for i in range(p["attempts"] - 1)]
+    assert sum(waits) >= 180
+    assert p["timeout"] >= sum(waits)
+
+
+def _assert_retries_refused_connection(call):
+    """call fails after retrying a refused connection, without real waits"""
+    attempts = 3
+    with requests_mock.mock() as m, stamina.set_testing(True, attempts=attempts):
+        m.get(requests_mock.ANY, exc=requests.exceptions.ConnectionError("refused"))
+        with pytest.raises(requests.ConnectionError):
+            call()
+        assert m.call_count == attempts
+
+
+def test_request_retries_refused_connection():
+    WFS = bcdata.wfs.BCWFS()
+    _assert_retries_refused_connection(lambda: WFS._request(WFS.wfs_url))
+
+
+def test_request_schema_retries_refused_connection():
+    WFS = bcdata.wfs.BCWFS()
+    _assert_retries_refused_connection(lambda: WFS._request_schema(AIRPORTS_TABLE))
+
+
+def test_request_capabilities_retries_refused_connection():
+    WFS = bcdata.wfs.BCWFS()
+    _assert_retries_refused_connection(WFS._request_capabilities)
+
+
+def test_bcdc_requests_retry_refused_connection():
+    _assert_retries_refused_connection(lambda: bcdata.bcdc._package_show(AIRPORTS_PACKAGE))
+    _assert_retries_refused_connection(lambda: bcdata.bcdc._table_definition(AIRPORTS_TABLE))

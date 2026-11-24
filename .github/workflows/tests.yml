@@ -8,6 +8,7 @@ on:
       - '.github/workflows/tests.yml'
       - 'uv.lock'
       - 'pyproject.toml'
+      - 'scripts/probe_openmaps.sh'
       - 'src/bcdata/**'
       - 'tests/**'
   pull_request:
@@ -16,6 +17,7 @@ on:
       - '.github/workflows/tests.yml'
       - 'uv.lock'
       - 'pyproject.toml'
+      - 'scripts/probe_openmaps.sh'
       - 'src/bcdata/**'
       - 'tests/**'
 
@@ -65,7 +67,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra test
 
+      # record this runner's IP and whether it can reach the WFS (#264) - never fails
+      - name: Check connectivity to openmaps.gov.bc.ca
+        run: bash scripts/probe_openmaps.sh 1
+
+      # no -x: a refused connection in one test should not hide the other results
       - name: Run tests
-        run: uv run pytest -v -rxXs -x --reruns 2 --reruns-delay 15
+        run: uv run pytest -v -rxXs --reruns 2 --reruns-delay 15
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+
+      # if tests fail, keep probing for 5 minutes to see how long refusals last (#264)
+      - name: Probe openmaps.gov.bc.ca after a failure
+        if: failure()
+        run: bash scripts/probe_openmaps.sh 15 20

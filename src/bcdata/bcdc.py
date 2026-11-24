@@ -5,7 +5,7 @@ import requests
 import stamina
 
 import bcdata
-from bcdata.wfs import RETRYABLE_STATUS_CODES, _is_retryable
+from bcdata.wfs import RETRY_POLICY, RETRYABLE_STATUS_CODES, _is_retryable
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def _check_response(r):
     return r
 
 
-@stamina.retry(on=_is_retryable, attempts=5, timeout=300)
+@stamina.retry(on=_is_retryable, **RETRY_POLICY)
 def _package_show(package):
     r = requests.get(BCDC_API_URL + "package_show", params={"id": package}, timeout=REQUEST_TIMEOUT)
     if r.status_code in [400, 404]:
@@ -45,7 +45,7 @@ def _package_show(package):
     return _check_response(r)
 
 
-@stamina.retry(on=_is_retryable, attempts=5, timeout=300)
+@stamina.retry(on=_is_retryable, **RETRY_POLICY)
 def _table_definition(table_name):
     r = requests.get(
         BCDC_API_URL + "package_search",

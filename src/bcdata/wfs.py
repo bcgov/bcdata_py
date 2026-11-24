@@ -57,6 +57,16 @@ class ServiceException(Exception):
 # 429 is DataBC's WFS telling us we're rate limited
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
+# How requests to DataBC services are retried (stamina.retry arguments).
+# openmaps.gov.bc.ca has been seen to refuse connections from GitHub-hosted runners
+# for 30s or more at a time (#264). With stamina's default waits (0.1s doubling to
+# 5s) every attempt fails within a few seconds of such a refusal, so waits here grow
+# from 5s to a minute, keeping retries going for several minutes: 5, 10, 20, 40, 60,
+# 60, 60 seconds between eight attempts (plus up to 1s jitter each), capped at 10
+# minutes in total - enough for several attempts at requests that take ~60s to fail
+# with a 504.
+RETRY_POLICY = {"attempts": 8, "timeout": 600, "wait_initial": 5, "wait_max": 60}
+
 
 def _rate_limit_backoff(response):
     """Return the server-specified backoff (seconds) for a 429 response, if given.
@@ -85,6 +95,14 @@ def _is_retryable(exc):
     Returning a float instead of True overrides the default backoff, which
     is used to honour a 429 response's server-specified retry delay.
     """
+    retry = _retry_decision(exc)
+    if retry:
+        # stamina's own retry log does not say what failed (eg a refused connection)
+        log.warning(f"Request to DataBC failed: {exc!r}")
+    return retry
+
+
+def _retry_decision(exc):
     if isinstance(exc, requests.HTTPError):
         response = exc.response
         if response is None or response.status_code not in RETRYABLE_STATUS_CODES:
@@ -171,9 +189,7 @@ class BCWFS:
                 or os.stat(cache_file).st_size == 0
             )
 
-    @stamina.retry(
-        on=(requests.HTTPError, requests.ConnectionError, requests.Timeout), attempts=5, timeout=300
-    )
+    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request_schema(self, table):
         schema = wfs_schema.get_schema(
             "https://openmaps.gov.bc.ca/geo/pub/ows",
@@ -182,9 +198,7 @@ class BCWFS:
         )
         return schema
 
-    @stamina.retry(
-        on=(requests.HTTPError, requests.ConnectionError, requests.Timeout), attempts=5, timeout=300
-    )
+    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request_capabilities(self):
         capabilities = ET.tostring(
             wfs200.WebFeatureService_2_0_0(self.ows_url, "2.0.0", None, False)._capabilities,
@@ -192,13 +206,13 @@ class BCWFS:
         )
         return capabilities
 
-    @stamina.retry(on=_is_retryable, attempts=5, timeout=300)
+    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request(self, url, params=None, silent=False):
         """Submit a request to DataBC WFS and return the raw response.
 
-        The WFS gateway itself can take up to ~60s to fail with a 504, so
-        the retry timeout above is sized to fit several such attempts
-        rather than being exhausted by a single one.
+        Failures are retried as set by RETRY_POLICY: connection refusals can
+        last 30s or more (#264), and the WFS gateway itself can take up to ~60s
+        to fail with a 504, so retries continue for several minutes.
 
         No connect timeout is set (matching requests/urllib3's own default
         of blocking until the OS gives up) - a hardcoded 10s connect timeout
