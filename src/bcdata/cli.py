@@ -170,10 +170,26 @@ def info(dataset, indent, meta_member, verbose, quiet):
     is_flag=True,
     default=False,
 )
+@click.option(
+    "--typed",
+    is_flag=True,
+    help="Set property types from the table schema, as bcdata parquet does: dates as "
+    "YYYY-MM-DD, whole numbers as integers",
+)
 @verbose_opt
 @quiet_opt
 def dump(
-    dataset, query, count, bounds, bounds_crs, sortby, lowercase, promote_to_multi, verbose, quiet
+    dataset,
+    query,
+    count,
+    bounds,
+    bounds_crs,
+    sortby,
+    lowercase,
+    promote_to_multi,
+    typed,
+    verbose,
+    quiet,
 ):
     """Write DataBC features to stdout as GeoJSON feature collection.
 
@@ -200,10 +216,15 @@ def dump(
         sortby=sortby,
         lowercase=lowercase,
         promote_to_multi=promote_to_multi,
-        as_gdf=False,
+        # a GeoDataFrame's columns are typed from the table schema
+        as_gdf=typed,
     )
     sink = click.get_text_stream("stdout")
-    sink.write(json.dumps(data))
+    if typed:
+        # dates (datetime.date) are not JSON serializable, str() gives YYYY-MM-DD
+        sink.write(data.to_json(default=str))
+    else:
+        sink.write(json.dumps(data))
 
 
 @cli.command()
