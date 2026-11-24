@@ -134,12 +134,12 @@ def test_no_features(tmp_path):
 def test_integer_inference():
     """integer columns need at least one value, and only whole numbers"""
 
-    from bcdata.parquet import _Columns
+    from bcdata.wfs import Columns
 
     schema = {
         "properties": {"ID": "decimal", "MEASURE": "decimal", "EMPTY": "decimal", "NAME": "string"}
     }
-    columns = _Columns(schema)
+    columns = Columns(schema)
     columns.arrays(
         [
             {"ID": 1, "MEASURE": 2, "EMPTY": None, "NAME": "a"},
@@ -153,9 +153,9 @@ def test_integer_inference():
 def test_string_values_coerced():
     """non-string JSON values in a string column are written as strings"""
 
-    from bcdata.parquet import _Columns
+    from bcdata.wfs import Columns
 
-    columns = _Columns({"properties": {"CODE": "string"}})
+    columns = Columns({"properties": {"CODE": "string"}})
     (arr,) = columns.arrays([{"CODE": "a"}, {"CODE": 5}, {"CODE": None}, {"CODE": True}])
     assert arr.to_pylist() == ["a", "5", None, "true"]
 
@@ -218,7 +218,7 @@ def _hash_table():
     import geoarrow.pyarrow as ga
     import pyarrow as pa
 
-    from bcdata.parquet import GEOMETRY_COLUMN
+    from bcdata.wfs import GEOMETRY_COLUMN
 
     geom = ga.wkb()
     n = 300
@@ -379,9 +379,9 @@ def test_object_store_output_creates_no_directories(tmp_path, monkeypatch):
 
 def test_large_integers_tracked():
     """whole numbers of 2**53 or more cannot be held exactly in float64"""
-    from bcdata.parquet import _Columns
+    from bcdata.wfs import Columns
 
-    columns = _Columns({"properties": {"BIG": "decimal", "SMALL": "decimal"}})
+    columns = Columns({"properties": {"BIG": "decimal", "SMALL": "decimal"}})
     columns.arrays([{"BIG": 2**53, "SMALL": 1}, {"BIG": 5, "SMALL": True}])
     assert columns.large_integers == {"BIG"}
     assert "big" not in columns.integer_columns()

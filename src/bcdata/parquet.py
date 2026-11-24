@@ -41,7 +41,7 @@ import os
 import secrets
 import shutil
 import tempfile
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 import duckdb
 import geoarrow.pyarrow as ga
@@ -53,7 +53,7 @@ import shapely
 from geopandas import GeoSeries
 
 import bcdata
-from bcdata.wfs import BCWFS
+from bcdata.wfs import BCWFS, GEOMETRY_COLUMN, Columns, parse_geometries
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +65,6 @@ HILBERT_LEVEL = 16
 NULL_HILBERT = 2 ** (2 * HILBERT_LEVEL)  # sorts null/empty geometries last
 
 GEOPARQUET_VERSION = "2.0.0"
-GEOMETRY_COLUMN = "geometry"
 SRID = 3005
 
 # shapely type id -> GeoParquet geometry_types name
@@ -84,9 +83,6 @@ GEOMETRY_TYPE_NAMES = {
 _HILBERT = "__bcdata_hilbert"
 _SEQ = "__bcdata_seq"
 
-# WFS DescribeFeatureType types that are not written (binary CAD annotations etc)
-SKIP_TYPES = ["hexBinary", "base64Binary"]
-
 
 class DownloadCheckError(RuntimeError):
     """The downloaded features failed a consistency check (missing/duplicated features)"""
@@ -95,25 +91,6 @@ class DownloadCheckError(RuntimeError):
 def _quote(name):
     """Quote an identifier for DuckDB SQL"""
     return '"' + name.replace('"', '""') + '"'
-
-
-def _parse_date(value):
-    # WFS returns dates as eg '2025-08-20Z'
-    if value is None:
-        return None
-    return date.fromisoformat(value[:10])
-
-
-def _parse_geometries(features):
-    geoms = np.array(
-        [
-            shapely.from_geojson(json.dumps(f["geometry"])) if f["geometry"] else None
-            for f in features
-        ],
-        dtype=object,
-    )
-    present = ~(shapely.is_missing(geoms) | shapely.is_empty(geoms))
-    return geoms, present
 
 
 def _geometry_summary(geoms, present):
@@ -138,81 +115,6 @@ def _hilbert_keys(geoms, present):
             total_bounds=BC_BOUNDS, level=HILBERT_LEVEL
         )
     return keys
-
-
-class _Columns:
-    """Map WFS schema properties to staging column types and track integer-ness"""
-
-    def __init__(self, wfs_schema):
-        self.source = []  # WFS property names, in schema order
-        self.types = {}  # WFS property name -> WFS type
-        for name, wfs_type in wfs_schema["properties"].items():
-            if wfs_type in SKIP_TYPES:
-                log.info(f"Skipping column {name} of unsupported type {wfs_type}")
-                continue
-            self.source.append(name)
-            self.types[name] = wfs_type
-        # output column names are always lowercase
-        self.names = {c: c.lower() for c in self.source}
-        if GEOMETRY_COLUMN in self.names.values():
-            raise ValueError(f"Source has a column named {GEOMETRY_COLUMN}, cannot write")
-        # WFS/BCDC do not distinguish integers from decimals, so integer columns
-        # are inferred: numeric columns where every value seen is a whole number...
-        self.integral = {c for c in self.source if self.types[c] == "decimal"}
-        # ...and at least one value has been seen (with no values, nothing
-        # supports an integer type - eg an empty layer - so stay float64)
-        self.has_values = set()
-        # numeric columns holding whole numbers too large for float64 to represent
-        # exactly (>= 2**53) - these are written as float64, so values are rounded
-        self.large_integers = set()
-
-    def arrow_type(self, name):
-        wfs_type = self.types[name]
-        if wfs_type == "decimal":
-            return pa.float64()
-        if wfs_type == "date":
-            return pa.date32()
-        if wfs_type != "string":
-            log.debug(f"Unrecognized WFS type {wfs_type} for {name}, writing as string")
-        return pa.string()
-
-    def staging_schema(self):
-        fields = [pa.field(self.names[c], self.arrow_type(c)) for c in self.source]
-        fields += [
-            pa.field(GEOMETRY_COLUMN, pa.binary()),
-            pa.field(_HILBERT, pa.int64()),
-            pa.field(_SEQ, pa.int64()),
-        ]
-        return pa.schema(fields)
-
-    def integer_columns(self):
-        """Output names of columns to write as int64"""
-        return {self.names[c] for c in self.integral & self.has_values}
-
-    def arrays(self, properties):
-        arrays = []
-        for c in self.source:
-            values = [p.get(c) for p in properties]
-            wfs_type = self.types[c]
-            if wfs_type == "decimal":
-                if c not in self.has_values and any(v is not None for v in values):
-                    self.has_values.add(c)
-                if c not in self.large_integers and any(
-                    isinstance(v, int) and not isinstance(v, bool) and abs(v) >= 2**53
-                    for v in values
-                ):
-                    self.large_integers.add(c)
-                if c in self.integral and not all(
-                    v is None or (isinstance(v, int) and abs(v) < 2**53) for v in values
-                ):
-                    self.integral.discard(c)
-            elif wfs_type == "date":
-                values = [_parse_date(v) for v in values]
-            else:
-                # string (or unrecognized) - tolerate non-string JSON values
-                values = [v if v is None or isinstance(v, str) else json.dumps(v) for v in values]
-            arrays.append(pa.array(values, type=self.arrow_type(c)))
-        return arrays
 
 
 def _schema_hash(fields):
@@ -408,7 +310,7 @@ def to_parquet(
     if not out_path:
         out_path = table.lower() + ".parquet"
     wfs_schema = WFS.get_schema(table)
-    columns = _Columns(wfs_schema)
+    columns = Columns(wfs_schema)
 
     # count expected features independently of how requests are paged
     n_expected = WFS.get_count(
@@ -455,13 +357,20 @@ def to_parquet(
     with tempfile.TemporaryDirectory(prefix="bcdata_") as tmpdir:
         # ---- pass 1: stream WFS pages to staging file ----
         staging_path = os.path.join(tmpdir, "staging.parquet")
-        staging_schema = columns.staging_schema()
+        staging_schema = pa.schema(
+            columns.page_fields()
+            + [
+                pa.field(GEOMETRY_COLUMN, pa.binary()),
+                pa.field(_HILBERT, pa.int64()),
+                pa.field(_SEQ, pa.int64()),
+            ]
+        )
         with pq.ParquetWriter(staging_path, staging_schema, compression="lz4") as writer:
             for url in urls:
                 features = WFS._request_featurecollection(url)["features"]
                 if not features:
                     continue
-                geoms, present = _parse_geometries(features)
+                geoms, present = parse_geometries(features)
                 page_types, page_bounds = _geometry_summary(geoms, present)
                 geometry_types |= page_types
                 if page_bounds is not None:
@@ -482,12 +391,7 @@ def to_parquet(
                 writer.write_batch(pa.RecordBatch.from_arrays(arrays, schema=staging_schema))
                 n_features += len(features)
         log.info(f"Downloaded {n_features} features from {table}")
-        if columns.large_integers:
-            log.warning(
-                f"{table}: column(s) {sorted(columns.names[c] for c in columns.large_integers)} "
-                "hold whole numbers of 2**53 or more, which are written as float64 and so "
-                "are rounded"
-            )
+        columns.log_large_integers(table)
 
         with duckdb.connect(config={"temp_directory": os.path.join(tmpdir, "duckdb")}) as con:
             if check:
@@ -497,16 +401,7 @@ def to_parquet(
             crs_json = pyproj.CRS.from_epsg(SRID).to_json_dict()
             geom_type = ga.wkb().with_crs(json.dumps(crs_json))
             integer_columns = columns.integer_columns()
-            final_fields = []
-            for field in staging_schema:
-                if field.name in (_HILBERT, _SEQ):
-                    continue
-                if field.name == GEOMETRY_COLUMN:
-                    final_fields.append(pa.field(GEOMETRY_COLUMN, geom_type))
-                elif field.name in integer_columns:
-                    final_fields.append(pa.field(field.name, pa.int64()))
-                else:
-                    final_fields.append(field)
+            final_fields = columns.fields() + [pa.field(GEOMETRY_COLUMN, geom_type)]
 
             column_comments = {
                 columns.names[c["column_name"]]: c.get("column_comments")

@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 
 import pytest
 import requests
@@ -489,3 +490,37 @@ def test_request_schemas_exception_report():
         m.get(requests_mock.ANY, text=EXCEPTION_REPORT)
         with pytest.raises(bcdata.wfs.ServiceException, match="C.OTHER unknown"):
             WFS._request_schemas(["C.OTHER"])
+
+
+def _point_feature(**properties):
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [1, 2]},
+        "properties": properties,
+    }
+
+
+def test_typed_gdf(monkeypatch):
+    """column types come from the table schema, the same in every page - not guessed
+    from each page (where a column with no values on a page would become object)"""
+    WFS = _wfs_without_network()
+    schema = {
+        "properties": {"ID": "decimal", "SCORE": "decimal", "NAME": "string", "SURVEYED": "date"},
+        "geometry_column": "SHAPE",
+    }
+    pages = {
+        "page1": [_point_feature(ID=1, SCORE=None, NAME=None, SURVEYED="2025-08-20Z")],
+        "page2": [_point_feature(ID=2, SCORE=3, NAME="a", SURVEYED=None)],
+    }
+    monkeypatch.setattr(WFS, "get_schema", lambda table: schema)
+    monkeypatch.setattr(WFS, "_request_featurecollection", lambda url: {"features": pages[url]})
+    gdf = bcdata.wfs._typed_gdf(WFS, "A.TABLE", ["page1", "page2"], lowercase=True)
+    assert {c: str(t) for c, t in gdf.dtypes.items()} == {
+        "id": "Int64",
+        "score": "Int64",  # integers stay integers, with nulls
+        "name": "str",
+        "surveyed": "object",  # datetime.date values
+        "geometry": "geometry",
+    }
+    assert gdf["surveyed"].tolist() == [date(2025, 8, 20), None]
+    assert gdf.crs == "EPSG:3005"

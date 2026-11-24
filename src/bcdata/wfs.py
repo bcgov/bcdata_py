@@ -10,13 +10,16 @@ import tempfile
 import threading
 import warnings
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+import pyarrow as pa
 import requests
+import shapely
 import stamina
 from shapely.geometry.linestring import LineString
 from shapely.geometry.multilinestring import MultiLineString
@@ -236,6 +239,124 @@ def _parse_schema(complex_type):
         if element.get("nillable", "false") == "false":
             schema["required"].append(name)
     return schema
+
+
+# Types of WFS feature values, set from the table schema. Shared by to_parquet and
+# get_data(as_gdf=True), so a table's columns get the same types whichever is used,
+# rather than types guessed from the values in each page.
+
+GEOMETRY_COLUMN = "geometry"
+
+# WFS DescribeFeatureType types that are not written (binary CAD annotations etc)
+SKIP_TYPES = ["hexBinary", "base64Binary"]
+
+
+def parse_date(value):
+    # WFS returns dates as eg '2025-08-20Z'
+    if value is None:
+        return None
+    return date.fromisoformat(value[:10])
+
+
+def parse_geometries(features):
+    """Return (shapely geometries, mask of geometries that are present and not empty)"""
+    geoms = np.array(
+        [
+            shapely.from_geojson(json.dumps(f["geometry"])) if f["geometry"] else None
+            for f in features
+        ],
+        dtype=object,
+    )
+    present = ~(shapely.is_missing(geoms) | shapely.is_empty(geoms))
+    return geoms, present
+
+
+class Columns:
+    """Map WFS schema properties to arrow types, and work out which are integers.
+
+    Call arrays() with the properties of each page of features, then fields() for
+    the types to give the combined pages.
+    """
+
+    def __init__(self, wfs_schema, lowercase=True):
+        self.source = []  # WFS property names, in schema order
+        self.types = {}  # WFS property name -> WFS type
+        for name, wfs_type in wfs_schema["properties"].items():
+            if wfs_type in SKIP_TYPES:
+                log.info(f"Skipping column {name} of unsupported type {wfs_type}")
+                continue
+            self.source.append(name)
+            self.types[name] = wfs_type
+        # WFS property name -> output column name
+        self.names = {c: c.lower() if lowercase else c for c in self.source}
+        if GEOMETRY_COLUMN in self.names.values():
+            raise ValueError(f"Source has a column named {GEOMETRY_COLUMN}, cannot write")
+        # WFS/BCDC do not distinguish integers from decimals, so integer columns
+        # are inferred: numeric columns where every value seen is a whole number...
+        self.integral = {c for c in self.source if self.types[c] == "decimal"}
+        # ...and at least one value has been seen (with no values, nothing
+        # supports an integer type - eg an empty layer - so stay float64)
+        self.has_values = set()
+        # numeric columns holding whole numbers too large for float64 to represent
+        # exactly (>= 2**53) - these are written as float64, so values are rounded
+        self.large_integers = set()
+
+    def arrow_type(self, name):
+        wfs_type = self.types[name]
+        if wfs_type == "decimal":
+            return pa.float64()
+        if wfs_type == "date":
+            return pa.date32()
+        if wfs_type != "string":
+            log.debug(f"Unrecognized WFS type {wfs_type} for {name}, writing as string")
+        return pa.string()
+
+    def page_fields(self):
+        """Fields of the arrays returned by arrays(): numeric columns are float64"""
+        return [pa.field(self.names[c], self.arrow_type(c)) for c in self.source]
+
+    def integer_columns(self):
+        """Output names of numeric columns holding only whole numbers, in every page seen"""
+        return {self.names[c] for c in self.integral & self.has_values}
+
+    def fields(self):
+        """Fields of the combined pages: integer_columns() are int64"""
+        integers = self.integer_columns()
+        return [f.with_type(pa.int64()) if f.name in integers else f for f in self.page_fields()]
+
+    def arrays(self, properties):
+        """Return an arrow array for each column, from a page of features' properties"""
+        arrays = []
+        for c in self.source:
+            values = [p.get(c) for p in properties]
+            wfs_type = self.types[c]
+            if wfs_type == "decimal":
+                if c not in self.has_values and any(v is not None for v in values):
+                    self.has_values.add(c)
+                if c not in self.large_integers and any(
+                    isinstance(v, int) and not isinstance(v, bool) and abs(v) >= 2**53
+                    for v in values
+                ):
+                    self.large_integers.add(c)
+                if c in self.integral and not all(
+                    v is None or (isinstance(v, int) and abs(v) < 2**53) for v in values
+                ):
+                    self.integral.discard(c)
+            elif wfs_type == "date":
+                values = [parse_date(v) for v in values]
+            else:
+                # string (or unrecognized) - tolerate non-string JSON values
+                values = [v if v is None or isinstance(v, str) else json.dumps(v) for v in values]
+            arrays.append(pa.array(values, type=self.arrow_type(c)))
+        return arrays
+
+    def log_large_integers(self, table):
+        if self.large_integers:
+            log.warning(
+                f"{table}: column(s) {sorted(self.names[c] for c in self.large_integers)} "
+                "hold whole numbers of 2**53 or more, which are written as float64 and so "
+                "are rounded"
+            )
 
 
 class BCWFS:
@@ -632,7 +753,11 @@ def get_data(
     lowercase=False,
     promote_to_multi=False,
 ):
-    """Request features from DataBC WFS, returning GeoJSON featurecollection or geodataframe"""
+    """Request features from DataBC WFS, returning GeoJSON featurecollection or geodataframe
+
+    A geodataframe's column types are set from the table schema (see _typed_gdf).
+    GeoJSON is returned as DataBC sends it, eg dates are strings like '2025-08-20Z'.
+    """
     WFS = BCWFS()
     table = WFS.validate_name(dataset)
     urls = WFS.define_requests(
@@ -643,6 +768,8 @@ def get_data(
         count=count,
         sortby=sortby,
     )
+    if as_gdf:
+        return _typed_gdf(WFS, table, urls, lowercase=lowercase, promote_to_multi=promote_to_multi)
     results = []
     for url in urls:
         results.append(
@@ -661,10 +788,38 @@ def get_data(
     # by creating an empty geodataframe
     else:
         gdf = gpd.GeoDataFrame(geometry=[])
-    if as_gdf:
-        return gdf
-    else:
-        return json.loads(gdf.to_json())
+    return json.loads(gdf.to_json())
+
+
+def _typed_gdf(WFS, table, urls, lowercase=False, promote_to_multi=False):
+    """Request features and return them as a GeoDataFrame, with column types set from
+    the table schema as to_parquet sets them (see Columns), rather than guessed
+    by geopandas from the values in each page.
+
+    Integer columns are pandas' nullable Int64, so they stay integers when they hold
+    nulls (pandas would otherwise make them float64, as plain int64 cannot hold nulls).
+    Dates are datetime.date values, as when reading a bcdata parquet file.
+    """
+    columns = Columns(WFS.get_schema(table), lowercase=lowercase)
+    page_schema = pa.schema(columns.page_fields())
+    pages, geoms = [], []
+    for url in urls:
+        features = WFS._request_featurecollection(url)["features"]
+        if features:
+            properties = [f["properties"] for f in features]
+            pages.append(pa.RecordBatch.from_arrays(columns.arrays(properties), schema=page_schema))
+            geoms.append(parse_geometries(features)[0])
+    columns.log_large_integers(table)
+    # integer columns are known once every page has been seen
+    data = pa.Table.from_batches(pages, schema=page_schema).cast(pa.schema(columns.fields()))
+    df = data.to_pandas(types_mapper={pa.int64(): pd.Int64Dtype()}.get)
+    geometry = gpd.GeoSeries(
+        np.concatenate(geoms) if geoms else [], name=GEOMETRY_COLUMN, crs="EPSG:3005"
+    )
+    gdf = gpd.GeoDataFrame(df, geometry=geometry)
+    if promote_to_multi:
+        gdf = promote_gdf_to_multi(gdf)
+    return gdf
 
 
 def get_count(dataset, query=None, bounds=None, bounds_crs="EPSG:3005"):
