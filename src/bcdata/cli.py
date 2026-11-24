@@ -219,12 +219,11 @@ def dump(
         # a GeoDataFrame's columns are typed from the table schema
         as_gdf=typed,
     )
-    sink = click.get_text_stream("stdout")
     if typed:
         # dates (datetime.date) are not JSON serializable, str() gives YYYY-MM-DD
-        sink.write(data.to_json(default=str))
+        click.echo(data.to_json(default=str), nl=False)
     else:
-        sink.write(json.dumps(data))
+        click.echo(json.dumps(data), nl=False)
 
 
 @cli.command()
