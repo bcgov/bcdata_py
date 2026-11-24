@@ -31,6 +31,18 @@ it from this path on the `main` branch every time `bcdata` is imported, and the 
 if the download fails. **Do not move, rename or delete this file**, or installs of older
 versions will break.
 
+Those versions download it from the repository's old location,
+`https://raw.githubusercontent.com/smnorris/bcdata/main/data/primary_keys.json`, which works
+only because GitHub redirects the old repository name to this one. GitHub stops redirecting
+if a repository is created at the old name, so **do not create a repository at
+`smnorris/bcdata`**, including by forking this one under that name.
+
+If the redirect ever stops working anyway, the fallback is to create `smnorris/bcdata`
+containing only `data/primary_keys.json` on `main`, plus a README linking here. Old installs
+then fetch the file from that repository directly. Do not do this while the redirect works:
+creating that repository ends the redirect for every old URL, including issue and PR links,
+clone URLs, and the project links in past PyPI releases.
+
 The file is frozen: bcdata no longer reads it, and new keys go in `table_metadata.toml` only.
 The one exception is a key found to be wrong. Remove it here too, because older versions
 use these keys as the primary key when loading tables with `bc2pg`, and a non-unique key
