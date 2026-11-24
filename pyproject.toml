@@ -29,13 +29,12 @@ dependencies = [
     "psycopg[binary]",
     "requests",
     "sqlalchemy",
-    "stamina"
+    "stamina>=25.1"
 ]
 
 [project.optional-dependencies]
 test = [
   "pytest",
-  "pytest-rerunfailures",
   "pre-commit",
   "requests-mock"
 ]

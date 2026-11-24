@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
       # ruff version pinned here should match the rev in .pre-commit-config.yaml
       - name: Check lint rules
         run: uvx ruff@0.16.3 check .
@@ -60,14 +60,30 @@ jobs:
           fetch-depth: 0  # setuptools_scm needs full history/tags to derive the version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: '3.13'
 
       - name: Install dependencies
         run: uv sync --extra test
 
+      # record the runner's IP, to check whether refused connections follow runner IPs
+      # (#264). Same lookup as bcgov/actions-openshift's runner reachability probe
+      - name: Runner IP
+        run: |
+          echo "runner IP: $(curl -sS --max-time 20 https://api.ipify.org 2>/dev/null || echo unknown)"
+
+      # no -x: a refused connection in one test should not hide the other results.
+      # No pytest reruns: bcdata itself retries failed requests for several minutes
+      # (RETRY_POLICY). The time limit stops a runner that is blocked for the whole
+      # job from waiting through every test's retries.
+      # log_cli shows warnings (eg each retried request and its cause) as they happen,
+      # even for tests that pass; --durations lists where the time went (#264)
       - name: Run tests
-        run: uv run pytest -v -rxXs -x --reruns 2 --reruns-delay 15
+        timeout-minutes: 45
+        run: >-
+          uv run pytest -v -rxXs --durations=10
+          -o log_cli=true -o log_cli_level=WARNING
+          -o log_cli_format="%(asctime)s %(levelname)s %(name)s: %(message)s"
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres

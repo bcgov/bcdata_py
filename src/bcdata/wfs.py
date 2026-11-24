@@ -1,10 +1,13 @@
+import errno
 import functools
 import json
 import logging
 import math
 import os
+import socket
 import sys
 import tempfile
+import threading
 import warnings
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
@@ -57,6 +60,43 @@ class ServiceException(Exception):
 # 429 is DataBC's WFS telling us we're rate limited
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
+# How requests to DataBC services are retried (stamina.retry arguments).
+# openmaps.gov.bc.ca has been seen to refuse connections from GitHub-hosted runners
+# for 30s or more at a time (#264). With stamina's default waits (0.1s doubling to
+# 5s) every attempt fails within a few seconds of such a refusal, so waits here grow
+# from 5s to a minute, keeping retries going for several minutes: 5, 10, 20, 40, 60,
+# 60, 60 seconds between eight attempts (plus up to 1s jitter each), capped at 10
+# minutes in total - enough for several attempts at requests that take ~60s to fail
+# with a 504.
+RETRY_POLICY = {"attempts": 8, "timeout": 600, "wait_initial": 5, "wait_max": 60}
+
+# (connect, read) timeouts for requests to DataBC services, in seconds.
+# Connections from GitHub-hosted runners are also silently dropped at times (#264).
+# With no connect timeout the OS gives up only after ~127s (Linux resends the
+# connection request at 1, 3, 7, 15, 31 and 63s), so each dropped attempt costs
+# ~2 minutes. 30s still allows 5 resends - a 10s connect timeout tripped on slow
+# runner handshakes (#246), which are likely early resends being dropped - and then
+# fails, so the request is retried on a fresh connection. The read timeout catches
+# a connected server that stops responding.
+REQUEST_TIMEOUT = (30, 65)
+
+# one requests.Session per thread (sessions are not guaranteed to be thread safe)
+_sessions = threading.local()
+
+
+def _session():
+    """Return this thread's requests.Session for DataBC requests.
+
+    A session keeps connections open and reuses them between requests (HTTP
+    keep-alive), instead of opening a new connection - and TLS handshake - for
+    every request. Connections from GitHub-hosted runners are blocked for minutes
+    at a time (#264); opening fewer connections may make that less likely.
+    """
+    session = getattr(_sessions, "session", None)
+    if session is None:
+        session = _sessions.session = requests.Session()
+    return session
+
 
 def _rate_limit_backoff(response):
     """Return the server-specified backoff (seconds) for a 429 response, if given.
@@ -85,6 +125,45 @@ def _is_retryable(exc):
     Returning a float instead of True overrides the default backoff, which
     is used to honour a 429 response's server-specified retry delay.
     """
+    if _network_unavailable(exc):
+        # fail fast: retrying for minutes will not help a machine with no network
+        log.error(f"No network (DNS lookup failed or network unreachable), not retrying: {exc!r}")
+        return False
+    retry = _retry_decision(exc)
+    if retry and not isinstance(exc, requests.HTTPError):
+        # stamina's own retry log does not say what failed (eg a refused connection).
+        # HTTP errors are already logged where the response is checked
+        log.warning(f"Request to DataBC failed: {exc!r}")
+    return retry
+
+
+def _network_unavailable(exc):
+    """Return True if exc shows this machine has no usable network.
+
+    That is, a DNS lookup failed (socket.gaierror) or the OS reports that no
+    network is reachable (ENETUNREACH) - as opposed to a server refusing or not
+    answering connections, which is worth retrying (#264). "No route to host"
+    (EHOSTUNREACH) is not included, as a firewall blocking a client can cause it.
+    The causes are found by walking the exception chain, eg ConnectionError ->
+    MaxRetryError -> NameResolutionError -> gaierror.
+    """
+    seen = set()
+    stack = [exc]
+    while stack:
+        e = stack.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        if isinstance(e, socket.gaierror):
+            return True
+        if isinstance(e, OSError) and e.errno == errno.ENETUNREACH:
+            return True
+        stack += [getattr(e, "reason", None), e.__cause__, e.__context__]
+        stack += [a for a in getattr(e, "args", ()) if isinstance(a, BaseException)]
+    return False
+
+
+def _retry_decision(exc):
     if isinstance(exc, requests.HTTPError):
         response = exc.response
         if response is None or response.status_code not in RETRYABLE_STATUS_CODES:
@@ -171,9 +250,7 @@ class BCWFS:
                 or os.stat(cache_file).st_size == 0
             )
 
-    @stamina.retry(
-        on=(requests.HTTPError, requests.ConnectionError, requests.Timeout), attempts=5, timeout=300
-    )
+    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request_schema(self, table):
         schema = wfs_schema.get_schema(
             "https://openmaps.gov.bc.ca/geo/pub/ows",
@@ -182,9 +259,7 @@ class BCWFS:
         )
         return schema
 
-    @stamina.retry(
-        on=(requests.HTTPError, requests.ConnectionError, requests.Timeout), attempts=5, timeout=300
-    )
+    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request_capabilities(self):
         capabilities = ET.tostring(
             wfs200.WebFeatureService_2_0_0(self.ows_url, "2.0.0", None, False)._capabilities,
@@ -192,22 +267,20 @@ class BCWFS:
         )
         return capabilities
 
-    @stamina.retry(on=_is_retryable, attempts=5, timeout=300)
+    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request(self, url, params=None, silent=False):
         """Submit a request to DataBC WFS and return the raw response.
 
-        The WFS gateway itself can take up to ~60s to fail with a 504, so
-        the retry timeout above is sized to fit several such attempts
-        rather than being exhausted by a single one.
+        Failures are retried as set by RETRY_POLICY: connection refusals can
+        last 30s or more (#264), and the WFS gateway itself can take up to ~60s
+        to fail with a 504, so retries continue for several minutes.
 
-        No connect timeout is set (matching requests/urllib3's own default
-        of blocking until the OS gives up) - a hardcoded 10s connect timeout
-        was observed tripping on GitHub-hosted runners, whose handshake to
-        openmaps.gov.bc.ca can exceed that (see issue #246). The read
-        timeout stays bounded so a connected-but-hanging server is still
-        caught.
+        Timeouts are set by REQUEST_TIMEOUT (see the notes there on why the
+        connect timeout is 30s).
         """
-        r = requests.get(url, params=params, headers=self.request_headers, timeout=(None, 65))
+        r = _session().get(
+            url, params=params, headers=self.request_headers, timeout=REQUEST_TIMEOUT
+        )
         if not silent:
             log.info(r.url)
         else:
