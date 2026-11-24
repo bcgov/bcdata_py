@@ -17,7 +17,8 @@ INTERVAL=${2:-20}
 URL="${PROBE_URL:-https://openmaps.gov.bc.ca/geo/pub/wfs?service=WFS&version=2.0.0&request=GetFeature&typeName=WHSE_BASEMAPPING.UTMG_UTM_ZONES_SP&outputFormat=json&count=1}"
 SUMMARY=${GITHUB_STEP_SUMMARY:-/dev/null}
 
-RUNNER_IP=$(curl -s --max-time 10 https://api.ipify.org || echo unknown)
+# same IP lookup as bcgov/actions-openshift's runner reachability probe
+RUNNER_IP=$(curl -sS --max-time 20 https://api.ipify.org 2>/dev/null || echo unknown)
 echo "runner IP: ${RUNNER_IP}"
 {
   echo "### openmaps.gov.bc.ca from ${RUNNER_IP}"
