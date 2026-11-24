@@ -11,7 +11,7 @@ from .wfs import list_tables as list_tables
 from .wfs import validate_name as validate_name
 
 # BCDC does not indicate which column in a table is the primary key (and has a few
-# other gaps/quirks), so bcdata bundles its own table metadata - see tables.toml
+# other gaps/quirks), so bcdata bundles its own table metadata - see data/table_metadata.toml
 table_metadata = load_table_metadata()
 primary_keys = {
     table: fields["primary_key"]
