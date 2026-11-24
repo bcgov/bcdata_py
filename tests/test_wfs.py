@@ -458,3 +458,17 @@ def test_get_schemas_batches_requests(tmp_path, monkeypatch):
     # cached schemas are not requested again
     WFS._get_schemas(tables)
     assert len(batches) == 2
+
+
+def test_request_schemas_untyped_column():
+    WFS = _wfs_without_network()
+    untyped = DESCRIBE_TWO_TABLES.replace(
+        'name="NAME" nillable="true" type="xsd:string"/>',
+        'name="NAME" nillable="true"><xsd:simpleType><xsd:restriction base="xsd:string">'
+        '<xsd:maxLength value="50"/></xsd:restriction></xsd:simpleType></xsd:element>',
+    )
+    assert untyped != DESCRIBE_TWO_TABLES
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, text=untyped)
+        with pytest.raises(bcdata.wfs.ServiceException, match="column NAME"):
+            WFS._request_schemas(["A.POINTS", "B.AREAS"])

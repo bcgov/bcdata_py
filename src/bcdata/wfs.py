@@ -220,7 +220,10 @@ def _parse_schema(complex_type):
         name = element.get("name")
         data_type = element.get("type")
         if name is None or data_type is None:
-            continue
+            # DataBC types every column inline. A column declared another way (ref=,
+            # or a nested xsd:simpleType) would otherwise be silently left out
+            column = name or element.get("ref") or ET.tostring(element, encoding="unicode")
+            raise ServiceException(f"Cannot parse type of column {column}")
         data_type = data_type.split(":")[-1]
         if data_type in GEOMETRY_TYPES:
             schema["geometry"] = GEOMETRY_TYPES[data_type]
