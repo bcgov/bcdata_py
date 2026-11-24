@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 import requests
 import requests_mock
@@ -16,23 +18,53 @@ STREAMS_TABLE = "whse_basemapping.fwa_stream_networks_sp"
 WELLS_TABLE = "whse_water_management.gw_water_wells_wrbc_svw"
 
 
-@pytest.fixture(autouse=True, scope="session")
-def deactivate_retries():
+def _wfs_without_network():
+    """A BCWFS for testing request methods, created without requesting capabilities"""
+    WFS = bcdata.wfs.BCWFS.__new__(bcdata.wfs.BCWFS)
+    WFS.wfs_url = "https://openmaps.gov.bc.ca/geo/pub/wfs"
+    WFS.ows_url = "https://openmaps.gov.bc.ca/geo/pub/ows?service=WFS&request=Getcapabilities"
+    WFS.request_headers = {"User-Agent": "bcdata.py tests"}
+    return WFS
+
+
+@pytest.fixture
+def quiet_logs(caplog):
+    """Silence bcdata and stamina logging in tests that simulate failed requests.
+
+    CI prints warnings live (log_cli) to show real retries (#264); without this,
+    simulated failures log the same "Request to DataBC failed" lines.
+    """
+    caplog.set_level(logging.CRITICAL + 1, logger="bcdata")
+    caplog.set_level(logging.CRITICAL + 1, logger="stamina")
+
+
+@pytest.fixture
+def no_retries():
+    """Deactivate retries for tests that mock failing responses, so they do not wait.
+
+    Only these tests: live tests run with retries active, as bcdata is used.
+    """
     stamina.set_active(False)
+    yield
+    stamina.set_active(True)
 
 
-def test_http_error_502():
+def test_http_error_502(no_retries, quiet_logs):
+    # request a feature page directly, so the test does not depend on cached
+    # capabilities (BCWFS() would otherwise request them, and get the mocked error)
+    WFS = _wfs_without_network()
     with requests_mock.mock() as m:
         m.get(requests_mock.ANY, status_code=502)
         with pytest.raises(requests.HTTPError):
-            bcdata.get_data(AIRPORTS_TABLE)
+            WFS._request(WFS.wfs_url)
 
 
-def test_http_error_404():
+def test_http_error_404(no_retries, quiet_logs):
+    WFS = _wfs_without_network()
     with requests_mock.mock() as m:
         m.get(requests_mock.ANY, status_code=404)
         with pytest.raises(bcdata.wfs.ServiceException):
-            bcdata.get_data(AIRPORTS_TABLE)
+            WFS._request(WFS.wfs_url)
 
 
 def _http_error(status_code):
@@ -53,7 +85,7 @@ def test_is_retryable_4xx_not_retried():
         assert bcdata.wfs._is_retryable(_http_error(code)) is False
 
 
-def test_is_retryable_connection_and_timeout_errors():
+def test_is_retryable_connection_and_timeout_errors(quiet_logs):
     """Connection/timeout failures are also worth retrying, not just bad HTTP responses"""
     assert bcdata.wfs._is_retryable(requests.ConnectionError()) is True
     assert bcdata.wfs._is_retryable(requests.Timeout()) is True
@@ -218,3 +250,150 @@ def test_get_count_uses_provided_geom_column(monkeypatch):
     monkeypatch.setattr(WFS, "_request_count", fake_request_count)
     WFS.get_count(AIRPORTS_TABLE, geom_column="MY_GEOM")
     assert calls["geom_column"] == "MY_GEOM"
+
+
+def test_retry_policy_spans_minutes():
+    """refusals lasting 30s or more must not exhaust retries (#264)"""
+    p = bcdata.wfs.RETRY_POLICY
+    waits = [min(p["wait_initial"] * 2**i, p["wait_max"]) for i in range(p["attempts"] - 1)]
+    assert sum(waits) >= 180
+    assert p["timeout"] >= sum(waits)
+
+
+def _assert_retries_refused_connection(call):
+    """call fails after retrying a refused connection, without real waits"""
+    attempts = 3
+    with requests_mock.mock() as m, stamina.set_testing(True, attempts=attempts):
+        m.get(requests_mock.ANY, exc=requests.exceptions.ConnectionError("refused"))
+        with pytest.raises(requests.ConnectionError):
+            call()
+        assert m.call_count == attempts
+
+
+def test_request_retries_refused_connection(quiet_logs):
+    WFS = _wfs_without_network()
+    _assert_retries_refused_connection(lambda: WFS._request(WFS.wfs_url))
+
+
+def test_request_schema_retries_refused_connection(quiet_logs):
+    WFS = _wfs_without_network()
+    _assert_retries_refused_connection(lambda: WFS._request_schema(AIRPORTS_TABLE))
+
+
+def test_request_capabilities_retries_refused_connection(quiet_logs):
+    WFS = _wfs_without_network()
+    _assert_retries_refused_connection(WFS._request_capabilities)
+
+
+def test_bcdc_requests_retry_refused_connection(quiet_logs):
+    _assert_retries_refused_connection(lambda: bcdata.bcdc._package_show(AIRPORTS_PACKAGE))
+    _assert_retries_refused_connection(lambda: bcdata.bcdc._table_definition(AIRPORTS_TABLE))
+
+
+def _connection_error(cause):
+    """A requests ConnectionError shaped like a real one, with cause at the root
+
+    eg ConnectionError -> MaxRetryError -> NewConnectionError -> gaierror
+    """
+    import urllib3
+
+    new_connection = urllib3.exceptions.NewConnectionError(None, f"failed: {cause}")
+    new_connection.__cause__ = cause
+    return requests.ConnectionError(urllib3.exceptions.MaxRetryError(None, "/", new_connection))
+
+
+def test_no_network_is_not_retried(quiet_logs):
+    """fail fast when DNS lookup fails or no network is reachable"""
+    import errno
+    import socket
+
+    dns = _connection_error(socket.gaierror(-2, "Name or service not known"))
+    unreachable = _connection_error(OSError(errno.ENETUNREACH, "Network is unreachable"))
+    assert bcdata.wfs._is_retryable(dns) is False
+    assert bcdata.wfs._is_retryable(unreachable) is False
+
+
+def test_refused_connection_is_retried(quiet_logs):
+    import errno
+
+    refused = _connection_error(ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"))
+    assert bcdata.wfs._is_retryable(refused) is True
+
+
+def test_request_fails_fast_without_network(quiet_logs):
+    import socket
+
+    WFS = _wfs_without_network()
+    dns = _connection_error(socket.gaierror(-2, "Name or service not known"))
+    with requests_mock.mock() as m, stamina.set_testing(True, attempts=3):
+        m.get(requests_mock.ANY, exc=dns)
+        with pytest.raises(requests.ConnectionError):
+            WFS._request(WFS.wfs_url)
+        assert m.call_count == 1
+
+
+def test_requests_use_connect_timeout(quiet_logs):
+    """a dropped connection fails after REQUEST_TIMEOUT[0] seconds, not the OS's ~2 minutes"""
+    assert bcdata.wfs.REQUEST_TIMEOUT[0] is not None
+    WFS = _wfs_without_network()
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, json={})
+        WFS._request(WFS.wfs_url)
+        bcdata.bcdc._package_show(AIRPORTS_PACKAGE)
+    assert [r.timeout for r in m.request_history] == [bcdata.wfs.REQUEST_TIMEOUT] * 2
+
+
+def test_requests_reuse_connections(monkeypatch):
+    """requests share a keep-alive connection instead of opening one each (#264)"""
+    import http.server
+    import threading
+
+    connections = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"  # keep connections open between requests
+
+        def setup(self):
+            connections.append(self.client_address)  # once per connection
+            super().setup()
+
+        def do_GET(self):
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # do not route the local request through a proxy, if one is configured
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    try:
+        WFS = _wfs_without_network()
+        url = f"http://127.0.0.1:{server.server_address[1]}/wfs"
+        for _ in range(3):
+            WFS._request(url)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert len(connections) == 1
+
+
+def test_one_session_per_thread():
+    import threading
+
+    sessions = []
+    threads = [
+        threading.Thread(target=lambda: sessions.append(bcdata.wfs._session())) for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert bcdata.wfs._session() is bcdata.wfs._session()
+    assert len({id(s) for s in sessions + [bcdata.wfs._session()]}) == 3
