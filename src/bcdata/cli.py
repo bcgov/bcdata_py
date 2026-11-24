@@ -173,8 +173,7 @@ def info(dataset, indent, meta_member, verbose, quiet):
 @click.option(
     "--typed",
     is_flag=True,
-    help="Set property types from the table schema: dates as YYYY-MM-DD,"
-    "whole numbers as integers",
+    help="Set property types from the table schema: dates as YYYY-MM-DD, whole numbers as integers",
 )
 @verbose_opt
 @quiet_opt
