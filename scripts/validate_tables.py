@@ -30,8 +30,8 @@ def find_problems():
     WFS = bcdata.wfs.BCWFS()
     available = {t.lower() for t in WFS.list_tables()}
     # check key columns against the WFS schema, which is what paged requests use.
-    # get_schemas describes many tables per request, rather than one request per table
-    schemas = WFS.get_schemas(sorted(t.upper() for t in bcdata.table_metadata if t in available))
+    # _get_schemas describes many tables per request, rather than one request per table
+    schemas = WFS._get_schemas(sorted(t.upper() for t in bcdata.table_metadata if t in available))
     problems = []
     for table, fields in sorted(bcdata.table_metadata.items()):
         if table not in available:

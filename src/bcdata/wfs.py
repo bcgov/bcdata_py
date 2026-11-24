@@ -318,9 +318,6 @@ class BCWFS:
             schemas[table] = _parse_schema(complex_types[types[table].split(":")[-1]])
         return schemas
 
-    def _request_schema(self, table):
-        return self._request_schemas([table])[table]
-
     def _request_capabilities(self):
         """Request the capabilities document, which lists every table."""
         r = self._request(self.ows_url, params={"version": "2.0.0"}, silent=True)
@@ -442,7 +439,7 @@ class BCWFS:
         )
         return count
 
-    def get_schemas(self, tables):
+    def _get_schemas(self, tables):
         """Return {table: schema} for several tables, requesting them in batches.
 
         Describing up to SCHEMAS_PER_REQUEST tables per request means checking many
@@ -461,7 +458,7 @@ class BCWFS:
         return schemas
 
     def get_schema(self, table):
-        return self.get_schemas([table])[table]
+        return self._get_schemas([table])[table]
 
     def get_sortkey(self, table):
         """Check data for unique columns available for sorting paged requests"""

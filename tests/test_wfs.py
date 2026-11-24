@@ -273,9 +273,9 @@ def test_request_retries_refused_connection(quiet_logs):
     _assert_retries_refused_connection(lambda: WFS._request(WFS.wfs_url))
 
 
-def test_request_schema_retries_refused_connection(quiet_logs):
+def test_request_schemas_retries_refused_connection(quiet_logs):
     WFS = _wfs_without_network()
-    _assert_retries_refused_connection(lambda: WFS._request_schema(AIRPORTS_TABLE))
+    _assert_retries_refused_connection(lambda: WFS._request_schemas([AIRPORTS_TABLE]))
 
 
 def test_request_capabilities_retries_refused_connection(quiet_logs):
@@ -453,8 +453,8 @@ def test_get_schemas_batches_requests(tmp_path, monkeypatch):
     monkeypatch.setattr(WFS, "_request_schemas", fake_request_schemas)
     monkeypatch.setattr(bcdata.wfs, "SCHEMAS_PER_REQUEST", 2)
     tables = ["A.ONE", "A.TWO", "A.THREE"]
-    assert set(WFS.get_schemas(tables)) == set(tables)
+    assert set(WFS._get_schemas(tables)) == set(tables)
     assert batches == [["A.ONE", "A.TWO"], ["A.THREE"]]
     # cached schemas are not requested again
-    WFS.get_schemas(tables)
+    WFS._get_schemas(tables)
     assert len(batches) == 2
