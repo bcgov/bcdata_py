@@ -29,13 +29,15 @@ def find_problems():
     """Return a list of (table, problem description) for invalid table metadata"""
     WFS = bcdata.wfs.BCWFS()
     available = {t.lower() for t in WFS.list_tables()}
+    # check key columns against the WFS schema, which is what paged requests use.
+    # get_schemas describes many tables per request, rather than one request per table
+    schemas = WFS.get_schemas(sorted(t.upper() for t in bcdata.table_metadata if t in available))
     problems = []
     for table, fields in sorted(bcdata.table_metadata.items()):
         if table not in available:
             problems.append((table, "table not available via WFS"))
             continue
-        # check key columns against the WFS schema, which is what paged requests use
-        columns = {c.lower() for c in WFS.get_schema(table.upper())["properties"]}
+        columns = {c.lower() for c in schemas[table.upper()]["properties"]}
         for key in ("primary_key", "sort_key"):
             if key in fields and fields[key] not in columns:
                 problems.append((table, f"{key} `{fields[key]}` not found in table"))

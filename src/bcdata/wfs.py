@@ -18,6 +18,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 import stamina
+from owslib.etree import etree
 from owslib.feature import schema as wfs_schema
 from owslib.feature import wfs200
 from owslib.wfs import WebFeatureService
@@ -82,6 +83,9 @@ REQUEST_TIMEOUT = (30, 65)
 
 # one requests.Session per thread (sessions are not guaranteed to be thread safe)
 _sessions = threading.local()
+
+# tables described per DescribeFeatureType request, to keep request URLs short
+SCHEMAS_PER_REQUEST = 50
 
 
 def _session():
@@ -250,14 +254,38 @@ class BCWFS:
                 or os.stat(cache_file).st_size == 0
             )
 
-    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
-    def _request_schema(self, table):
-        schema = wfs_schema.get_schema(
-            "https://openmaps.gov.bc.ca/geo/pub/ows",
-            typename=table,
-            version="2.0.0",
+    def _request_schemas(self, tables):
+        """Request the schemas of several tables in one DescribeFeatureType request.
+
+        Returns {table: schema}, in the format of owslib.feature.schema.get_schema().
+        The request is made with _request rather than owslib, so that it reuses
+        connections, and is retried, like any other bcdata request (#264).
+        """
+        r = self._request(
+            self.ows_url.split("?")[0],
+            params={
+                "service": "WFS",
+                "version": "2.0.0",
+                "request": "DescribeFeatureType",
+                "typeNames": ",".join(tables),
+            },
+            silent=True,
         )
-        return schema
+        root = etree.fromstring(r.content)
+        xsd = "{http://www.w3.org/2001/XMLSchema}"
+        # each table is a top level element, typed by a complexType listing its columns
+        types = {e.get("name"): e.get("type") for e in root.findall(xsd + "element")}
+        schemas = {}
+        for table in tables:
+            if table not in types:
+                raise ServiceException(f"DescribeFeatureType returned no schema for {table}")
+            # parse as owslib.feature.schema.get_schema() does, so the format is the same
+            elements = wfs_schema._get_elements(types[table].split(":")[1], root)
+            schemas[table] = wfs_schema._construct_schema(elements, getattr(root, "nsmap", None))
+        return schemas
+
+    def _request_schema(self, table):
+        return self._request_schemas([table])[table]
 
     @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request_capabilities(self):
@@ -380,14 +408,26 @@ class BCWFS:
         )
         return count
 
+    def get_schemas(self, tables):
+        """Return {table: schema} for several tables, requesting them in batches.
+
+        Describing up to SCHEMAS_PER_REQUEST tables per request means checking many
+        tables makes a few requests rather than one per table.
+        """
+        # download table definitions if file is > 30 days old, empty, or refresh is specified
+        stale = [t for t in tables if self.check_cached_file(t) or self.refresh]
+        for i in range(0, len(stale), SCHEMAS_PER_REQUEST):
+            for table, schema in self._request_schemas(stale[i : i + SCHEMAS_PER_REQUEST]).items():
+                self._write_cache_file(table, json.dumps(schema, indent=4))
+        # load cached schemas
+        schemas = {}
+        for table in tables:
+            with open(os.path.join(self.cache_path, table), "r") as f:
+                schemas[table] = json.loads(f.read())
+        return schemas
+
     def get_schema(self, table):
-        # download table definition if file is > 30 days old, empty, or refresh is specified
-        if self.check_cached_file(table) or self.refresh:
-            schema = self._request_schema(table)
-            self._write_cache_file(table, json.dumps(schema, indent=4))
-        # load cached schema
-        with open(os.path.join(self.cache_path, table), "r") as f:
-            return json.loads(f.read())
+        return self.get_schemas([table])[table]
 
     def get_sortkey(self, table):
         """Check data for unique columns available for sorting paged requests"""

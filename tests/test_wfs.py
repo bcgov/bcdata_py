@@ -395,3 +395,66 @@ def test_one_session_per_thread():
         t.join()
     assert bcdata.wfs._session() is bcdata.wfs._session()
     assert len({id(s) for s in sessions + [bcdata.wfs._session()]}) == 3
+
+
+DESCRIBE_TWO_TABLES = """<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:pub="http://delivery.openmaps.gov.bc.ca/geo/"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+  targetNamespace="http://delivery.openmaps.gov.bc.ca/geo/">
+  <xsd:complexType name="A.POINTSType"><xsd:complexContent>
+    <xsd:extension base="gml:AbstractFeatureType"><xsd:sequence>
+      <xsd:element maxOccurs="1" minOccurs="1" name="ID" nillable="false" type="xsd:decimal"/>
+      <xsd:element maxOccurs="1" minOccurs="0" name="SHAPE" nillable="true" type="gml:PointPropertyType"/>
+    </xsd:sequence></xsd:extension></xsd:complexContent></xsd:complexType>
+  <xsd:element name="A.POINTS" substitutionGroup="gml:AbstractFeature" type="pub:A.POINTSType"/>
+  <xsd:complexType name="B.AREASType"><xsd:complexContent>
+    <xsd:extension base="gml:AbstractFeatureType"><xsd:sequence>
+      <xsd:element maxOccurs="1" minOccurs="0" name="NAME" nillable="true" type="xsd:string"/>
+      <xsd:element maxOccurs="1" minOccurs="0" name="GEOMETRY" nillable="true" type="gml:GeometryPropertyType"/>
+    </xsd:sequence></xsd:extension></xsd:complexContent></xsd:complexType>
+  <xsd:element name="B.AREAS" substitutionGroup="gml:AbstractFeature" type="pub:B.AREASType"/>
+</xsd:schema>"""
+
+
+def test_request_schemas_describes_tables_in_one_request():
+    WFS = _wfs_without_network()
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, text=DESCRIBE_TWO_TABLES)
+        schemas = WFS._request_schemas(["A.POINTS", "B.AREAS"])
+    assert m.call_count == 1
+    assert m.last_request.qs["typenames"] == ["a.points,b.areas"]
+    assert schemas["A.POINTS"] == {
+        "properties": {"ID": "decimal"},
+        "required": ["ID"],
+        "geometry": "Point",
+        "geometry_column": "SHAPE",
+    }
+    assert schemas["B.AREAS"]["properties"] == {"NAME": "string"}
+    assert schemas["B.AREAS"]["geometry_column"] == "GEOMETRY"
+
+
+def test_request_schemas_missing_table():
+    WFS = _wfs_without_network()
+    with requests_mock.mock() as m:
+        m.get(requests_mock.ANY, text=DESCRIBE_TWO_TABLES)
+        with pytest.raises(bcdata.wfs.ServiceException, match="C.OTHER"):
+            WFS._request_schemas(["A.POINTS", "C.OTHER"])
+
+
+def test_get_schemas_batches_requests(tmp_path, monkeypatch):
+    WFS = _wfs_without_network()
+    WFS.cache_path, WFS.refresh, WFS.cache_refresh_days = str(tmp_path), False, 30
+    batches = []
+
+    def fake_request_schemas(tables):
+        batches.append(tables)
+        return {t: {"properties": {}} for t in tables}
+
+    monkeypatch.setattr(WFS, "_request_schemas", fake_request_schemas)
+    monkeypatch.setattr(bcdata.wfs, "SCHEMAS_PER_REQUEST", 2)
+    tables = ["A.ONE", "A.TWO", "A.THREE"]
+    assert set(WFS.get_schemas(tables)) == set(tables)
+    assert batches == [["A.ONE", "A.TWO"], ["A.THREE"]]
+    # cached schemas are not requested again
+    WFS.get_schemas(tables)
+    assert len(batches) == 2
