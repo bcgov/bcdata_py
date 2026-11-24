@@ -173,8 +173,8 @@ def info(dataset, indent, meta_member, verbose, quiet):
 @click.option(
     "--typed",
     is_flag=True,
-    help="Set property types from the table schema, as bcdata parquet does: dates as "
-    "YYYY-MM-DD, whole numbers as integers",
+    help="Set property types from the table schema: dates as YYYY-MM-DD,"
+    "whole numbers as integers",
 )
 @verbose_opt
 @quiet_opt
@@ -216,7 +216,7 @@ def dump(
         sortby=sortby,
         lowercase=lowercase,
         promote_to_multi=promote_to_multi,
-        # a GeoDataFrame's columns are typed from the table schema
+        # if typed option is true, the data must be processed as_gdf prior to dumping
         as_gdf=typed,
     )
     if typed:
