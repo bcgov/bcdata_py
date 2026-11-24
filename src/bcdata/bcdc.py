@@ -1,11 +1,16 @@
 import logging
 from urllib.parse import urlparse
 
-import requests
 import stamina
 
 import bcdata
-from bcdata.wfs import REQUEST_TIMEOUT, RETRY_POLICY, RETRYABLE_STATUS_CODES, _is_retryable
+from bcdata.wfs import (
+    REQUEST_TIMEOUT,
+    RETRY_POLICY,
+    RETRYABLE_STATUS_CODES,
+    _is_retryable,
+    _session,
+)
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +42,9 @@ def _check_response(r):
 
 @stamina.retry(on=_is_retryable, **RETRY_POLICY)
 def _package_show(package):
-    r = requests.get(BCDC_API_URL + "package_show", params={"id": package}, timeout=REQUEST_TIMEOUT)
+    r = _session().get(
+        BCDC_API_URL + "package_show", params={"id": package}, timeout=REQUEST_TIMEOUT
+    )
     if r.status_code in [400, 404]:
         raise ValueError(f"Dataset {package} not found in DataBC API list")
     return _check_response(r)
@@ -45,7 +52,7 @@ def _package_show(package):
 
 @stamina.retry(on=_is_retryable, **RETRY_POLICY)
 def _table_definition(table_name):
-    r = requests.get(
+    r = _session().get(
         BCDC_API_URL + "package_search",
         params={"q": "res_extras_object_name:" + table_name},
         timeout=REQUEST_TIMEOUT,

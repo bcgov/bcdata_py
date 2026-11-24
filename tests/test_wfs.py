@@ -341,3 +341,59 @@ def test_requests_use_connect_timeout(quiet_logs):
         WFS._request(WFS.wfs_url)
         bcdata.bcdc._package_show(AIRPORTS_PACKAGE)
     assert [r.timeout for r in m.request_history] == [bcdata.wfs.REQUEST_TIMEOUT] * 2
+
+
+def test_requests_reuse_connections(monkeypatch):
+    """requests share a keep-alive connection instead of opening one each (#264)"""
+    import http.server
+    import threading
+
+    connections = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"  # keep connections open between requests
+
+        def setup(self):
+            connections.append(self.client_address)  # once per connection
+            super().setup()
+
+        def do_GET(self):
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # do not route the local request through a proxy, if one is configured
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    try:
+        WFS = _wfs_without_network()
+        url = f"http://127.0.0.1:{server.server_address[1]}/wfs"
+        for _ in range(3):
+            WFS._request(url)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert len(connections) == 1
+
+
+def test_one_session_per_thread():
+    import threading
+
+    sessions = []
+    threads = [
+        threading.Thread(target=lambda: sessions.append(bcdata.wfs._session())) for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert bcdata.wfs._session() is bcdata.wfs._session()
+    assert len({id(s) for s in sessions + [bcdata.wfs._session()]}) == 3

@@ -7,6 +7,7 @@ import os
 import socket
 import sys
 import tempfile
+import threading
 import warnings
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
@@ -78,6 +79,23 @@ RETRY_POLICY = {"attempts": 8, "timeout": 600, "wait_initial": 5, "wait_max": 60
 # fails, so the request is retried on a fresh connection. The read timeout catches
 # a connected server that stops responding.
 REQUEST_TIMEOUT = (30, 65)
+
+# one requests.Session per thread (sessions are not guaranteed to be thread safe)
+_sessions = threading.local()
+
+
+def _session():
+    """Return this thread's requests.Session for DataBC requests.
+
+    A session keeps connections open and reuses them between requests (HTTP
+    keep-alive), instead of opening a new connection - and TLS handshake - for
+    every request. Connections from GitHub-hosted runners are blocked for minutes
+    at a time (#264); opening fewer connections may make that less likely.
+    """
+    session = getattr(_sessions, "session", None)
+    if session is None:
+        session = _sessions.session = requests.Session()
+    return session
 
 
 def _rate_limit_backoff(response):
@@ -260,7 +278,9 @@ class BCWFS:
         Timeouts are set by REQUEST_TIMEOUT (see the notes there on why the
         connect timeout is 30s).
         """
-        r = requests.get(url, params=params, headers=self.request_headers, timeout=REQUEST_TIMEOUT)
+        r = _session().get(
+            url, params=params, headers=self.request_headers, timeout=REQUEST_TIMEOUT
+        )
         if not silent:
             log.info(r.url)
         else:
