@@ -1,4 +1,4 @@
-"""Validate the bundled table metadata (src/bcdata/tables.toml) against the live services.
+"""Validate the bundled table metadata (data/table_metadata.toml) against the live services.
 
 Checks that every table exists in the WFS, that each primary_key and sort_key column
 is present in the WFS table schema, and that each bcdc_object_name lets the BC Data Catalogue
@@ -54,7 +54,7 @@ def write_report(problems, path):
     lines = [
         (
             f"`scripts/validate_tables.py` found {len(problems)} problem(s) in "
-            "`src/bcdata/tables.toml`:"
+            "`data/table_metadata.toml`:"
         ),
         "",
         "| Table | Problem |",
@@ -64,7 +64,7 @@ def write_report(problems, path):
     lines += [
         "",
         (
-            "Update or remove the affected entries in `src/bcdata/tables.toml`, then confirm "
+            "Update or remove the affected entries in `data/table_metadata.toml`, then confirm "
             "with `python scripts/validate_tables.py`. This issue is closed automatically when "
             "validation passes."
         ),

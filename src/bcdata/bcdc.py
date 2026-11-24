@@ -86,7 +86,7 @@ def get_table_name(package):
 
 def _resource_matches(table_name, resource):
     """Return True if resource is a geographic resource for table_name with a schema present"""
-    # the catalogue lists a few tables under a different object name (see tables.toml)
+    # the catalogue lists a few tables under a different object name (see data/table_metadata.toml)
     bcdc_object_name = bcdata.table_metadata.get(table_name.lower(), {}).get(
         "bcdc_object_name", table_name
     )

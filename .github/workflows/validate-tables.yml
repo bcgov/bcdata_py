@@ -1,6 +1,6 @@
 name: Validate table metadata
 
-# Check src/bcdata/tables.toml against the live WFS and BC Data Catalogue:
+# Check data/table_metadata.toml against the live WFS and BC Data Catalogue:
 # every table must still be available and every primary_key / sort_key column
 # must still exist.
 #
@@ -20,7 +20,7 @@ on:
     branches: [ main ]
     paths:
       - '.github/workflows/validate-tables.yml'
-      - 'src/bcdata/tables.toml'
+      - 'data/table_metadata.toml'
       - 'src/bcdata/_tables.py'
       - 'scripts/validate_tables.py'
 
