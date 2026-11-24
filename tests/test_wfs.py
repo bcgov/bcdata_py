@@ -156,10 +156,6 @@ def test_get_sortkey_unknown():
 def test_get_data_asgdf():
     gdf = bcdata.get_data(UTMZONES_KEY, query="UTM_ZONE=10", as_gdf=True)
     assert type(gdf) is GeoDataFrame
-
-
-def test_get_data_asgdf_crs():
-    gdf = bcdata.get_data(UTMZONES_KEY, query="UTM_ZONE=10", as_gdf=True)
     assert gdf.crs == "EPSG:3005"
 
 
@@ -193,12 +189,14 @@ def test_get_data_crs():
     assert data["crs"]["properties"]["name"] == "urn:ogc:def:crs:EPSG::3005"
 
 
-# this presumes the page size will always be less than the total number of wells
-def test_get_data_paged_count():
-    wfs = bcdata.wfs.BCWFS()
-    count = wfs.pagesize + 100
+def test_get_data_paged_count(small_pages):
+    # 3 requests: two full pages and a partial one
+    count = small_pages * 2 + 5
     data = bcdata.get_data(WELLS_TABLE, count=count)
     assert len(data["features"]) == count
+    # pages are sorted, so they do not overlap
+    ids = [f["properties"]["OBJECTID"] for f in data["features"]]
+    assert len(set(ids)) == count
 
 
 def test_get_data_sortby():
