@@ -18,10 +18,6 @@ import geopandas as gpd
 import pandas as pd
 import requests
 import stamina
-from owslib.etree import etree
-from owslib.feature import schema as wfs_schema
-from owslib.feature import wfs200
-from owslib.wfs import WebFeatureService
 from shapely.geometry.linestring import LineString
 from shapely.geometry.multilinestring import MultiLineString
 from shapely.geometry.multipoint import MultiPoint
@@ -180,17 +176,60 @@ def _retry_decision(exc):
     return isinstance(exc, (requests.ConnectionError, requests.Timeout))
 
 
+XSD = "{http://www.w3.org/2001/XMLSchema}"
+WFS_NS = "{http://www.opengis.net/wfs/2.0}"
+
+# GML property types of geometry columns, and the geometry type each is reported as
+# (as named by owslib, which bcdata used to parse schemas - cached schemas use these)
+GEOMETRY_TYPES = {
+    "PointPropertyType": "Point",
+    "PolygonPropertyType": "Polygon",
+    "LineStringPropertyType": "LineString",
+    "MultiPointPropertyType": "MultiPoint",
+    "MultiLineStringPropertyType": "MultiLineString",
+    "MultiPolygonPropertyType": "MultiPolygon",
+    "MultiGeometryPropertyType": "MultiGeometry",
+    "GeometryPropertyType": "GeometryCollection",
+    "SurfacePropertyType": "3D Polygon",
+    "MultiSurfacePropertyType": "3D MultiPolygon",
+}
+
+
 @functools.lru_cache(maxsize=1)
-def _parse_table_names(ows_url, capabilities):
+def _parse_table_names(capabilities):
     """Parse table names from capabilities xml.
 
     Parsing is slow (~50ms) and validate_name/list_tables are called several times
     per request, so the result is cached for as long as the capabilities xml is unchanged.
     """
+    root = ET.fromstring(capabilities)
     return tuple(
-        i.removeprefix("pub:")
-        for i in WebFeatureService(ows_url, version="2.0.0", xml=capabilities).contents
+        name.text.removeprefix("pub:")
+        for name in root.iterfind(f"{WFS_NS}FeatureTypeList/{WFS_NS}FeatureType/{WFS_NS}Name")
     )
+
+
+def _parse_schema(complex_type):
+    """Return the schema of a table from the xsd:complexType describing it.
+
+    {"properties": {column: xsd type}, "required": [non-nillable columns],
+     "geometry": geometry type, "geometry_column": column}
+    """
+    schema = {"properties": {}, "required": [], "geometry": None}
+    for element in complex_type.iter(XSD + "element"):
+        name = element.get("name")
+        data_type = element.get("type")
+        if name is None or data_type is None:
+            continue
+        data_type = data_type.split(":")[-1]
+        if data_type in GEOMETRY_TYPES:
+            schema["geometry"] = GEOMETRY_TYPES[data_type]
+            schema["geometry_column"] = name
+        else:
+            schema["properties"][name] = data_type
+        if element.get("nillable", "false") == "false":
+            schema["required"].append(name)
+    return schema
 
 
 class BCWFS:
@@ -219,6 +258,7 @@ class BCWFS:
         p.mkdir(parents=True, exist_ok=True)
         self.refresh = refresh
         self.cache_refresh_days = 30
+        self.request_headers = {"User-Agent": f"bcdata.py ({bcdata.__version__})"}
         self.capabilities = self.get_capabilities()
         # get pagesize from xml using the xpath from https://github.com/bcgov/bcdata/
         countdefault = ET.fromstring(self.capabilities).findall(
@@ -227,8 +267,6 @@ class BCWFS:
         self.pagesize = int(
             countdefault.find("ows:DefaultValue", {"ows": "http://www.opengis.net/ows/1.1"}).text
         )
-
-        self.request_headers = {"User-Agent": f"bcdata.py ({bcdata.__version__})"}
 
     def _write_cache_file(self, cache_file, text):
         """Write text to a cache file atomically (temp file in cache dir, then replace)"""
@@ -257,9 +295,7 @@ class BCWFS:
     def _request_schemas(self, tables):
         """Request the schemas of several tables in one DescribeFeatureType request.
 
-        Returns {table: schema}, in the format of owslib.feature.schema.get_schema().
-        The request is made with _request rather than owslib, so that it reuses
-        connections, and is retried, like any other bcdata request (#264).
+        Returns {table: schema}, see _parse_schema.
         """
         r = self._request(
             self.ows_url.split("?")[0],
@@ -271,29 +307,27 @@ class BCWFS:
             },
             silent=True,
         )
-        root = etree.fromstring(r.content)
-        xsd = "{http://www.w3.org/2001/XMLSchema}"
+        root = ET.fromstring(r.content)
         # each table is a top level element, typed by a complexType listing its columns
-        types = {e.get("name"): e.get("type") for e in root.findall(xsd + "element")}
+        types = {e.get("name"): e.get("type") for e in root.findall(XSD + "element")}
+        complex_types = {c.get("name"): c for c in root.findall(XSD + "complexType")}
         schemas = {}
         for table in tables:
             if table not in types:
                 raise ServiceException(f"DescribeFeatureType returned no schema for {table}")
-            # parse as owslib.feature.schema.get_schema() does, so the format is the same
-            elements = wfs_schema._get_elements(types[table].split(":")[1], root)
-            schemas[table] = wfs_schema._construct_schema(elements, getattr(root, "nsmap", None))
+            schemas[table] = _parse_schema(complex_types[types[table].split(":")[-1]])
         return schemas
 
     def _request_schema(self, table):
         return self._request_schemas([table])[table]
 
-    @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request_capabilities(self):
-        capabilities = ET.tostring(
-            wfs200.WebFeatureService_2_0_0(self.ows_url, "2.0.0", None, False)._capabilities,
-            encoding="unicode",
-        )
-        return capabilities
+        """Request the capabilities document, which lists every table."""
+        r = self._request(self.ows_url, params={"version": "2.0.0"}, silent=True)
+        if ET.fromstring(r.content).tag.endswith("ExceptionReport"):
+            raise ServiceException(r.text)
+        # the document is utf-8 (and declares it), whatever the response headers say
+        return r.content.decode("utf-8")
 
     @stamina.retry(on=_is_retryable, **RETRY_POLICY)
     def _request(self, url, params=None, silent=False):
@@ -455,7 +489,7 @@ class BCWFS:
 
     def list_tables(self):
         """read and parse capabilities xml, which lists all tables available"""
-        return list(_parse_table_names(self.ows_url, self.capabilities))
+        return list(_parse_table_names(self.capabilities))
 
     def validate_name(self, dataset):
         """Check wfs/cache and the bcdc api to see if dataset name is valid"""
