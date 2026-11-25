@@ -36,6 +36,11 @@ test = [
     { name = "requests-mock" },
 ]
 
+[package.dev-dependencies]
+replicate = [
+    { name = "fit-changedetector" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "click" },
@@ -53,6 +58,9 @@ requires-dist = [
     { name = "stamina", specifier = ">=25.1" },
 ]
 provides-extras = ["test"]
+
+[package.metadata.requires-dev]
+replicate = [{ name = "fit-changedetector", specifier = ">=0.1.0a4" }]
 
 [[package]]
 name = "certifi"
@@ -229,6 +237,18 @@ wheels = [
 ]
 
 [[package]]
+name = "cligj"
+version = "0.7.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ea/0d/837dbd5d8430fd0f01ed72c4cfb2f548180f4c68c635df84ce87956cff32/cligj-0.7.2.tar.gz", hash = "sha256:a4bc13d623356b373c2c27c53dbd9c68cae5d526270bfa71f6c6fa69669c6b27", size = 9803, upload-time = "2021-05-28T21:23:27.935Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/86/43fa9f15c5b9fb6e82620428827cd3c284aa933431405d1bcf5231ae3d3e/cligj-0.7.2-py3-none-any.whl", hash = "sha256:c1ca117dbce1fe20a5809dc96f01e1c2840f6dcc939b3ddbb1111bf330ba82df", size = 7069, upload-time = "2021-05-28T21:23:26.877Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -275,6 +295,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bf/9d/7ec738e68764703d07eb4da4b43aabf0ae6f969f34cb3792a88af400abc5/filelock-4.2.11.tar.gz", hash = "sha256:0cb84119fb8dce17898e1f69c974d5019daa59c4d7656be390a5fa59ccced912", size = 680235, upload-time = "2026-11-17T06:35:26.056Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ed/50/efc158a54b0046104b546f24b28ca1bf25b72969adb960032252a1687a96/filelock-4.2.11-py3-none-any.whl", hash = "sha256:020e229e4bb9d410fc799c07ddf45fa217cba970278f40b30751d94f309b69e2", size = 222003, upload-time = "2026-11-17T06:35:24.668Z" },
+]
+
+[[package]]
+name = "fit-changedetector"
+version = "0.1.0a4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "cligj" },
+    { name = "geopandas" },
+    { name = "pyarrow" },
+    { name = "pyogrio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/54/1a/e838aa51944e5328352e74b1e61855562d2009dd64c0aeeeec307a88147f/fit_changedetector-0.1.0a4.tar.gz", hash = "sha256:d270ed75fe34b4707a52123c1fc7e16c9bb94dfc3d69db2d999c3fe42f3c9db5", size = 139077, upload-time = "2026-09-25T21:29:04.678Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/b8/7850c35a29c37efe7b60adb08d29cd8eb081ba2e019fec3f76e535d92e3d/fit_changedetector-0.1.0a4-py3-none-any.whl", hash = "sha256:f9fb761d7f0c3380c19fa3f05c9395850403ee88441c6772264af8dc006c9de2", size = 30663, upload-time = "2026-09-25T21:29:03.452Z" },
 ]
 
 [[package]]
