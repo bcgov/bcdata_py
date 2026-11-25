@@ -421,6 +421,32 @@ def test_failed_log_leaves_no_records_file(dest, download, monkeypatch):
     assert read_gdf(dest, f"{TABLE}.parquet")["name"].tolist() == ["a"]
 
 
+@pytest.mark.parametrize("log_exists", [True, False])
+def test_change_log_written_meanwhile(download, monkeypatch, log_exists):
+    # another run writes the change log between this run reading and replacing it
+    # (MemoryStore: obstore's LocalStore has no conditional writes)
+    dest = replicate.Destination("memory://mirror", store=obstore.store.MemoryStore())
+    download.data = {TABLE: gdf([1], ["a"])}
+    run(dest, download, tables=[TABLE])
+    if not log_exists:
+        dest.delete("changes", f"{TABLE}.parquet")
+    read_change_log = replicate.read_change_log
+
+    def read_then_overwrite(dest_, table, local_path):
+        result = read_change_log(dest_, table, local_path)
+        obstore.put(dest_.store, f"changes/{table}.parquet", b"another run")
+        return result
+
+    monkeypatch.setattr(replicate, "read_change_log", read_then_overwrite)
+    download.data[TABLE] = gdf([1], ["b"])
+    failures = run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])
+    assert "ConcurrentWriteError" in failures[TABLE]
+    # the other run's log is kept, this run's records file removed, mirror unchanged
+    assert dest.read_bytes("changes", f"{TABLE}.parquet") == b"another run"
+    assert listed(dest, "changes", TABLE) == []
+    assert read_gdf(dest, f"{TABLE}.parquet")["name"].tolist() == ["a"]
+
+
 def test_hash_changed_data_unchanged(dest, download):
     # eg a bcdata upgrade changes how files are written: every hash changes once
     download.data = {TABLE: gdf([1], ["a"])}

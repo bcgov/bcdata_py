@@ -113,6 +113,10 @@ class RekeyError(ValueError):
     """A table's key changed since its last change log row, and rekey is not set"""
 
 
+class ConcurrentWriteError(RuntimeError):
+    """A file changed between reading and rewriting it, eg by an overlapping run"""
+
+
 @dataclass(frozen=True)
 class KeyConfig:
     """How records of a table are matched between files"""
@@ -285,12 +289,40 @@ class Destination:
         return read_bcdata_metadata(io.BytesIO(b"PAR1" + footer + tail))
 
     def download(self, local_path, *parts):
+        """Download a file, returning its ETag"""
+        result = obstore.get(self.store, self.key(*parts))
         with open(local_path, "wb") as f:
-            f.writelines(obstore.get(self.store, self.key(*parts)))
+            f.writelines(result)
+        return result.meta.get("e_tag")
 
     def upload(self, local_path, *parts):
         # multipart for files over 5 MB
         obstore.put(self.store, self.key(*parts), Path(local_path))
+
+    def replace(self, local_path, *parts, e_tag=None):
+        """Upload a file read earlier, only if it hasn't changed since.
+
+        e_tag is the file's ETag when it was read, or None if it didn't exist (then
+        the upload only succeeds if it still doesn't). Raises ConcurrentWriteError if
+        the file was written in the meantime, eg by an overlapping run. Stores that
+        don't support conditional writes (obstore's LocalStore) are written to
+        unconditionally.
+        """
+        key = self.key(*parts)
+        mode = {"e_tag": e_tag} if e_tag else "create"
+        try:
+            # a conditional put is never multipart
+            obstore.put(self.store, key, Path(local_path), mode=mode)
+        except (obstore.exceptions.PreconditionError, obstore.exceptions.AlreadyExistsError) as e:
+            raise ConcurrentWriteError(
+                f"{self.url(*parts)} changed since it was read, eg by another run"
+            ) from e
+        except NotImplementedError:
+            log.debug(f"{self.url(*parts)}: store has no conditional writes, overwriting")
+            obstore.put(self.store, key, Path(local_path))
+
+    def delete(self, *parts):
+        obstore.delete(self.store, self.key(*parts))
 
     def read_bytes(self, *parts):
         return bytes(obstore.get(self.store, self.key(*parts)).bytes())
@@ -626,12 +658,12 @@ def _keys_as_strings(log_table):
 
 
 def read_change_log(dest, table, local_path):
-    """The table's change log, or None if it has none"""
+    """The table's change log and its ETag, or (None, None) if it has none"""
     parts = ("changes", f"{table}.parquet")
     if not dest.exists(*parts):
-        return None
-    dest.download(local_path, *parts)
-    return pq.read_table(local_path)
+        return None, None
+    e_tag = dest.download(local_path, *parts)
+    return pq.read_table(local_path), e_tag
 
 
 def check_key(table, keys, change_log, rekey):
@@ -740,7 +772,7 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
             return entry
 
         # before diffing: a changed key needs rekey
-        change_log = read_change_log(
+        change_log, log_e_tag = read_change_log(
             dest, table, os.path.join(tmpdir, "change_log_previous.parquet")
         )
         rekeyed = check_key(table, keys, change_log, fields.get("rekey", False))
@@ -786,7 +818,8 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
         # write everything locally before uploading anything, so a failure doesn't
         # leave a records file the log doesn't list. Then upload the records file,
         # the log, and the mirror file last, so every uploaded mirror file has a
-        # change log row
+        # change log row. The log is only replaced if it hasn't changed since it was
+        # read: two overlapping runs would otherwise each drop the other's row
         records_local = None
         if changes is not None:
             row["records_file"] = f"changes/{table}/{timestamp}.parquet"
@@ -797,7 +830,12 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
         append_change_log(change_log, row, schema, log_local)
         if records_local:
             dest.upload(records_local, *row["records_file"].split("/"))
-        dest.upload(log_local, "changes", f"{table}.parquet")
+        try:
+            dest.replace(log_local, "changes", f"{table}.parquet", e_tag=log_e_tag)
+        except ConcurrentWriteError:
+            if records_local:
+                dest.delete(*row["records_file"].split("/"))
+            raise
         dest.upload(new_path, f"{table}.parquet")
         entry["status"] = row["kind"]
         entry["changed"] = now.isoformat(timespec="seconds")

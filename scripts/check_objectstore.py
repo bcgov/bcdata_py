@@ -57,8 +57,9 @@ def check(name, fn):
 def conditional_put(dest, key):
     """Whether the store refuses a write conditional on a stale ETag.
 
-    replicate.py doesn't use conditional writes (yet): they would protect the change
-    log's read-modify-write from overlapping runs.
+    replicate.py replaces each change log only if it is unchanged since it was read,
+    so two overlapping runs can't each drop the other's row. Without support, the log
+    is overwritten unconditionally.
     """
     etag = obstore.head(dest.store, key)["e_tag"]
     try:
