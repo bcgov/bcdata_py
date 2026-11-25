@@ -120,6 +120,10 @@ class RekeyError(ValueError):
     """A table's key changed since its last change log row, and rekey is not set"""
 
 
+class CatalogueMissingError(RuntimeError):
+    """A changed download has no catalogue metadata, but the mirror file has"""
+
+
 class ConcurrentWriteError(RuntimeError):
     """A file changed between reading and rewriting it, eg by an overlapping run"""
 
@@ -803,6 +807,21 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
         same_content = bool(previous_meta) and (
             previous_meta["content_hash"] == new_meta["content_hash"]
         )
+        # bcdata.to_parquet still writes the file if the BC Data Catalogue lookup
+        # fails, without the catalogue metadata. Don't replace a mirror file that has
+        # it with one that doesn't, or log the gap as a metadata change
+        if previous_meta and previous_meta.get("catalogue") and not new_meta.get("catalogue"):
+            if same_content:
+                log.warning(
+                    f"{table}: unchanged, but no catalogue record in the download "
+                    "(catalogue unavailable?), mirror metadata not compared"
+                )
+                entry["status"] = "unchanged"
+                return entry
+            raise CatalogueMissingError(
+                f"{table}: changed, but the download has no catalogue record (catalogue "
+                "unavailable, or the record removed), mirror not replaced"
+            )
         changed_metadata = metadata_changes(previous_meta, new_meta) if previous_meta else None
         if same_content and not changed_metadata:
             log.info(f"{table}: unchanged ({new_meta['feature_count']} features)")

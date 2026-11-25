@@ -512,6 +512,32 @@ def test_metadata_changed(dest, download):
     assert record["updated_keys"] == [2]
 
 
+def test_catalogue_unavailable(dest, download):
+    download.data = {TABLE: gdf([1, 2], ["a", "b"])}
+    run(dest, download, tables=[TABLE])
+
+    # the catalogue lookup fails: to_parquet writes the file without its metadata
+    download.metadata[TABLE] = {"description": None, "columns": {}, "catalogue": None}
+    later = NOW + timedelta(days=7)
+    assert run(dest, download, now=later, tables=[TABLE]) == {}
+    assert dest.read_json("state.json")[TABLE]["status"] == "unchanged"
+    assert len(changes(dest, TABLE)) == 1
+
+    # the records changed too: fail rather than replace the mirror's metadata
+    download.data[TABLE] = gdf([1, 2], ["a", "B"])
+    failures = run(dest, download, now=later + timedelta(days=7), tables=[TABLE])
+    assert failures[TABLE].startswith("CatalogueMissingError")
+    assert len(changes(dest, TABLE)) == 1
+    footer = dest.read_bcdata_metadata(TABLE, f"{TABLE}.parquet")
+    assert footer["catalogue"]["title"] == "Test table"
+    assert read_gdf(dest, TABLE, f"{TABLE}.parquet")["name"].tolist() == ["a", "b"]
+
+    # catalogue back: the change is logged
+    del download.metadata[TABLE]
+    assert run(dest, download, now=later + timedelta(days=8), tables=[TABLE]) == {}
+    assert changes(dest, TABLE)[-1]["updated_keys"] == [2]
+
+
 def test_metadata_change_checks_key(dest, download):
     # a metadata row records the key too, so a key edit still needs rekey
     download.data = {HASHED: gdf([1, 2], ["a", "b"])}
