@@ -1,15 +1,18 @@
-"""Tests for scripts/replicate.py, against a local destination folder.
+"""Tests for scripts/replicate.py, against a local destination folder and an
+in-memory object store (obstore MemoryStore, which like S3 or Azure has no folders).
 
 Downloads are faked: each test provides the GeoDataFrame a download returns, written
 with the "bcdata" footer metadata that bcdata.to_parquet adds.
 """
 
 import importlib.util
+import io
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import geopandas as gpd
+import obstore
 import pyarrow
 import pyarrow.parquet as pq
 import pytest
@@ -68,8 +71,10 @@ class FakeDownload:
         return out_path
 
 
-@pytest.fixture
-def dest(tmp_path):
+@pytest.fixture(params=["local", "memory"])
+def dest(request, tmp_path):
+    if request.param == "memory":
+        return replicate.Destination("memory://mirror", store=obstore.store.MemoryStore())
     return replicate.Destination(str(tmp_path / "mirror"))
 
 
@@ -84,14 +89,28 @@ def run(dest, download, now=NOW, **kwargs):
     )
 
 
+def read_table(dest, *parts):
+    return pq.read_table(io.BytesIO(dest.read_bytes(*parts)))
+
+
+def read_gdf(dest, *parts):
+    return gpd.read_parquet(io.BytesIO(dest.read_bytes(*parts)))
+
+
+def listed(dest, *parts):
+    """Paths of the files under a folder of the destination"""
+    prefix = dest.key(*parts)
+    return [o["path"] for o in obstore.list(dest.store, prefix=prefix).collect()]
+
+
 def changes(dest, table):
     """Rows of a table's change log"""
-    return pq.read_table(dest.path("changes", f"{table}.parquet")).to_pylist()
+    return read_table(dest, "changes", f"{table}.parquet").to_pylist()
 
 
 def records(dest, record):
     """The changed records file of a change log row"""
-    return gpd.read_parquet(dest.path(*record["records_file"].split("/")))
+    return read_gdf(dest, *record["records_file"].split("/"))
 
 
 # ---- configuration ----
@@ -198,7 +217,7 @@ def test_initial_unchanged_changed(dest, download):
     ]
     assert (rows["_commit_timestamp"] == later).all()
     # the mirror is the new download
-    assert len(gpd.read_parquet(dest.path(f"{TABLE}.parquet"))) == 3
+    assert len(read_gdf(dest, f"{TABLE}.parquet")) == 3
 
 
 def test_generated_key(dest, download):
@@ -219,12 +238,12 @@ def test_generated_key(dest, download):
     assert record["unchanged"] == 1
     assert (record["inserted"], record["deleted"]) == (2, 2)
     # the mirror file has no generated key
-    assert replicate.HASH_KEY not in gpd.read_parquet(dest.path(f"{HASHED}.parquet")).columns
+    assert replicate.HASH_KEY not in read_gdf(dest, f"{HASHED}.parquet").columns
     # keep_change_records defaults to false: keys (hashes) recorded, but no changed records
     assert [len(record[f"{t}_keys"]) for t in ("inserted", "deleted", "updated")] == [2, 2, 0]
     assert all(isinstance(k, str) for k in record["inserted_keys"])
     assert record["records_file"] is None
-    assert not Path(dest.path("changes", HASHED)).exists()
+    assert listed(dest, "changes", HASHED) == []
     assert record["duplicate_keys_previous"] is None
     # the log has a row for each change, the initial load first
     assert [r["kind"] for r in changes(dest, HASHED)] == ["initial", "changed"]
@@ -354,9 +373,8 @@ def test_key_type_change_keeps_log(dest, download):
     assert [r["rekeyed"] for r in rows] == [False, False, True]
     assert rows[1]["updated_keys"] == ["2"]
     assert len(rows[2]["inserted_keys"]) == len(rows[2]["deleted_keys"]) == 1
-    assert pq.read_schema(dest.path("changes", f"{TABLE}.parquet")).field(
-        "updated_keys"
-    ).type == pyarrow.list_(pyarrow.string())
+    log_schema = read_table(dest, "changes", f"{TABLE}.parquet").schema
+    assert log_schema.field("updated_keys").type == pyarrow.list_(pyarrow.string())
 
 
 def test_rekey(dest, download, caplog):
@@ -370,7 +388,7 @@ def test_rekey(dest, download, caplog):
     assert "RekeyError" in failures[HASHED]
     assert "rekey = true" in failures[HASHED]
     assert len(changes(dest, HASHED)) == 1
-    assert gpd.read_parquet(dest.path(f"{HASHED}.parquet"))["name"].tolist() == ["a", "b"]
+    assert read_gdf(dest, f"{HASHED}.parquet")["name"].tolist() == ["a", "b"]
 
     # accepted with rekey: the diff uses the new key for both files
     edited[HASHED]["rekey"] = True
@@ -397,24 +415,40 @@ def test_failed_log_leaves_no_records_file(dest, download, monkeypatch):
 
     monkeypatch.setattr(replicate, "append_change_log", fail)
     assert "log failed" in run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])[TABLE]
-    assert not Path(dest.path("changes", TABLE)).exists()
+    assert listed(dest, "changes", TABLE) == []
     assert len(changes(dest, TABLE)) == 1
     # the mirror is unchanged
-    assert gpd.read_parquet(dest.path(f"{TABLE}.parquet"))["name"].tolist() == ["a"]
+    assert read_gdf(dest, f"{TABLE}.parquet")["name"].tolist() == ["a"]
 
 
 def test_hash_changed_data_unchanged(dest, download):
     # eg a bcdata upgrade changes how files are written: every hash changes once
     download.data = {TABLE: gdf([1], ["a"])}
     run(dest, download, tables=[TABLE])
-    path = dest.path(f"{TABLE}.parquet")
-    t = pq.read_table(path)
-    meta = pq.read_metadata(path).metadata
+    data = dest.read_bytes(f"{TABLE}.parquet")
+    t = pq.read_table(io.BytesIO(data))
+    meta = pq.read_metadata(io.BytesIO(data)).metadata
     bcdata_meta = json.loads(meta[b"bcdata"])
     bcdata_meta["content_hash"] = "sha256:other"
-    pq.write_table(t.replace_schema_metadata({**meta, b"bcdata": json.dumps(bcdata_meta)}), path)
+    buf = io.BytesIO()
+    pq.write_table(t.replace_schema_metadata({**meta, b"bcdata": json.dumps(bcdata_meta)}), buf)
+    obstore.put(dest.store, f"{TABLE}.parquet", buf.getvalue())
     run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])
     record = changes(dest, TABLE)[-1]
     assert record["kind"] == "changed"
     assert not record["data_changed"]
     assert record["records_file"] is None
+
+
+def test_destination_footer_only(dest):
+    # the footer is read with range requests, not a download of the whole file
+    buf = io.BytesIO()
+    pq.write_table(
+        pyarrow.table({"a": range(1000)}).replace_schema_metadata({"bcdata": '{"x": 1}'}), buf
+    )
+    obstore.put(dest.store, "t.parquet", buf.getvalue())
+    assert dest.read_bcdata_metadata("t.parquet") == {"x": 1}
+    assert dest.read_bcdata_metadata("missing.parquet") is None
+    obstore.put(dest.store, "not.parquet", b"not a parquet file")
+    with pytest.raises(ValueError, match="not a parquet file"):
+        dest.read_bcdata_metadata("not.parquet")

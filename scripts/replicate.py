@@ -12,10 +12,13 @@ destination's state.json):
 
     python scripts/replicate.py --dest s3://bucket/prefix [--tables a,b] [--force]
 
-The destination is --dest, or the BCDATA_REPLICATION_DEST environment variable. It
-can be any URI pyarrow understands (s3://..., or a local folder for testing).
-Credentials and the S3 endpoint come from the standard AWS environment variables
-(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL...).
+The destination is --dest, or the BCDATA_REPLICATION_DEST environment variable: an
+object store URL (s3://bucket/prefix, az://container/prefix, gs://bucket/prefix) or
+a local folder. Files are transferred with obstore. Credentials and endpoints come
+from the standard environment variables of each service, eg AWS_ACCESS_KEY_ID,
+AWS_SECRET_ACCESS_KEY and AWS_ENDPOINT_URL for S3 (plus AWS_ALLOW_HTTP=true for a
+plain http endpoint), or AZURE_STORAGE_ACCOUNT_NAME and AZURE_STORAGE_ACCOUNT_KEY
+for Azure.
 
 Destination layout:
 
@@ -43,6 +46,7 @@ Exit codes:
 """
 
 import argparse
+import io
 import json
 import logging
 import os
@@ -58,10 +62,15 @@ import geopandas
 import pandas
 import pyarrow
 import pyarrow.parquet as pq
-from pyarrow import fs
 
 import bcdata
 from bcdata.parquet import DownloadCheckError
+
+try:
+    import obstore
+    from obstore.store import LocalStore, from_url
+except ImportError:  # validate_tables.py reads the config without the replicate group
+    obstore = None
 
 LOG_FORMAT = "%(asctime)s:%(levelname)s:%(name)s: %(message)s"
 log = logging.getLogger("replicate")
@@ -224,50 +233,77 @@ def is_due(fields, state_entry, now):
 
 
 class Destination:
-    """The mirror location: any pyarrow filesystem URI (s3://..., or a local folder)"""
+    """The mirror location: an object store URL (s3://..., az://..., gs://...) or a
+    local folder. Paths within it are given as parts, eg ("changes", "x.parquet")
 
-    def __init__(self, uri):
+    store: an obstore store to use instead of one built from uri (eg a MemoryStore)
+    """
+
+    def __init__(self, uri, store=None):
+        if obstore is None:
+            raise ImportError("obstore is required: uv sync --group replicate")
         self.uri = uri.rstrip("/")
-        self.fs, self.root = fs.FileSystem.from_uri(self.uri)
-        self.root = self.root.rstrip("/")
+        if store is None:
+            if self.uri.startswith("file://"):
+                store = from_url(self.uri, mkdir=True)
+            elif "://" in self.uri:
+                store = from_url(self.uri)
+            else:
+                store = LocalStore(os.path.abspath(self.uri), mkdir=True)
+        self.store = store
 
-    def path(self, *parts):
-        return "/".join([self.root, *parts])
+    @staticmethod
+    def key(*parts):
+        return "/".join(parts)
 
     def url(self, *parts):
         return "/".join([self.uri, *parts])
 
     def exists(self, *parts):
-        return self.fs.get_file_info(self.path(*parts)).type == fs.FileType.File
+        try:
+            obstore.head(self.store, self.key(*parts))
+        except FileNotFoundError:
+            return False
+        return True
 
     def read_bcdata_metadata(self, *parts):
-        """bcdata footer metadata of a parquet file, or None if there is no file"""
-        if not self.exists(*parts):
+        """bcdata footer metadata of a parquet file, or None if there is no file.
+
+        Reads only the footer: a parquet file ends with the footer, its length (4
+        bytes, little endian) and the magic bytes PAR1.
+        """
+        key = self.key(*parts)
+        try:
+            size = obstore.head(self.store, key)["size"]
+        except FileNotFoundError:
             return None
-        with self.fs.open_input_file(self.path(*parts)) as f:
-            return read_bcdata_metadata(f)
+        tail = bytes(obstore.get_range(self.store, key, start=size - 8, end=size))
+        if size < 12 or tail[4:] != b"PAR1":
+            raise ValueError(f"{self.url(*parts)} is not a parquet file")
+        length = int.from_bytes(tail[:4], "little")
+        footer = bytes(obstore.get_range(self.store, key, start=size - 8 - length, end=size - 8))
+        return read_bcdata_metadata(io.BytesIO(b"PAR1" + footer + tail))
 
     def download(self, local_path, *parts):
-        fs.copy_files(self.path(*parts), str(local_path), source_filesystem=self.fs)
+        with open(local_path, "wb") as f:
+            f.writelines(obstore.get(self.store, self.key(*parts)))
 
     def upload(self, local_path, *parts):
-        path = self.path(*parts)
-        if self.fs.type_name == "local":
-            self.fs.create_dir(path.rsplit("/", 1)[0], recursive=True)
-        fs.copy_files(str(local_path), path, destination_filesystem=self.fs)
+        # multipart for files over 5 MB
+        obstore.put(self.store, self.key(*parts), Path(local_path))
+
+    def read_bytes(self, *parts):
+        return bytes(obstore.get(self.store, self.key(*parts)).bytes())
 
     def read_json(self, *parts):
-        if not self.exists(*parts):
+        try:
+            return json.loads(self.read_bytes(*parts).decode("utf-8"))
+        except FileNotFoundError:
             return {}
-        with self.fs.open_input_stream(self.path(*parts)) as f:
-            return json.loads(f.read().decode("utf-8"))
 
     def write_json(self, data, *parts):
-        path = self.path(*parts)
-        if self.fs.type_name == "local":
-            self.fs.create_dir(path.rsplit("/", 1)[0], recursive=True)
-        with self.fs.open_output_stream(path) as f:
-            f.write((json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+        text = json.dumps(data, indent=2, sort_keys=True) + "\n"
+        obstore.put(self.store, self.key(*parts), text.encode("utf-8"))
 
 
 def read_bcdata_metadata(source):
