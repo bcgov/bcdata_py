@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 import pytest
 from shapely.geometry import Point
 
-pytest.importorskip("fit_changedetector")
+pytest.importorskip("obstore")
 
 _spec = importlib.util.spec_from_file_location(
     "replicate", Path(__file__).resolve().parent.parent / "scripts" / "replicate.py"
@@ -281,13 +281,53 @@ def test_regenerated_id_not_ignored_by_default(dest, download):
 
 
 def test_generated_key_null_geometry(dest, download):
+    # a record without geometry is hashed (and compared) like any other
     download.data = {HASHED: gdf([1, 2], ["a", "b"], geoms=[Point(1, 1), None])}
     run(dest, download, tables=[HASHED])
     download.data[HASHED] = gdf([1, 2], ["a", "c"], geoms=[Point(1, 1), None])
     run(dest, download, now=NOW + timedelta(days=7), tables=[HASHED])
     record = changes(dest, HASHED)[-1]
-    assert record["dropped_null_geometry_previous"] == 1
-    assert record["dropped_null_geometry_current"] == 1
+    counts = ("inserted", "deleted", "updated", "unchanged")
+    assert [record[c] for c in counts] == [1, 1, 0, 1]
+
+
+def test_generated_key_ignores_inferred_type(dest, download):
+    # bcdata infers int64 or double per download: a whole number hashes the same
+    config = {HASHED: {"schedule": "weekly", "hash_columns": ["value"]}}
+    kwargs = {"download": download, "table_metadata": TABLE_METADATA, "tables": [HASHED]}
+    download.data = {HASHED: gdf([1, 2], ["a", "b"], values=[1, 2])}
+    replicate.run(dest, config, now=NOW, **kwargs)
+    download.data[HASHED] = gdf([1, 2], ["a", "b"], values=[1.0, 2.5])
+    replicate.run(dest, config, now=NOW + timedelta(days=7), **kwargs)
+    first = changes(dest, HASHED)[-1]
+    assert (first["inserted"], first["deleted"], first["unchanged"]) == (1, 1, 1)
+    # int64 again: 1 still matches the double 1.0, and 2.5 is deleted under the key
+    # it was inserted with
+    download.data[HASHED] = gdf([1, 2], ["a", "b"], values=[1, 3])
+    replicate.run(dest, config, now=NOW + timedelta(days=14), **kwargs)
+    second = changes(dest, HASHED)[-1]
+    assert (second["inserted"], second["deleted"], second["unchanged"]) == (1, 1, 1)
+    assert second["deleted_keys"] == first["inserted_keys"]
+
+
+def test_objectid_ignored(dest, download):
+    # BCGW regenerates objectid when a table is reloaded: not compared
+    download.data = {TABLE: gdf([1, 2], ["a", "b"]).assign(objectid=[1, 2])}
+    run(dest, download, tables=[TABLE])
+    download.data[TABLE] = gdf([1, 2], ["a", "c"]).assign(objectid=[11, 12])
+    run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])
+    record = changes(dest, TABLE)[-1]
+    assert (record["updated"], record["unchanged"]) == (1, 1)
+    assert "objectid" in record["ignored_columns"]
+    # the changed records keep it
+    assert records(dest, record)["objectid"].tolist() == [2, 12]
+
+
+def test_single_hash_column_null_not_duplicate(dest, download):
+    config = {HASHED: {"schedule": "weekly", "hash_columns": ["name"]}}
+    kwargs = {"download": download, "table_metadata": TABLE_METADATA, "tables": [HASHED]}
+    download.data = {HASHED: gdf([1, 2], ["a", None])}
+    assert replicate.run(dest, config, now=NOW, **kwargs) == {}
 
 
 def test_int_float_flip(dest, download):

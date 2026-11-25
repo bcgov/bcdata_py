@@ -44,7 +44,8 @@ test = [
 [dependency-groups]
 # scripts/replicate.py (GeoParquet mirror change detection), not a package dependency
 replicate = [
-  "fit_changedetector>=0.1.0a4",
+  # the diff reads GeoParquet geometries as DuckDB's GEOMETRY type (cast to WKB)
+  "duckdb>=2.0",
   "obstore>=0.12.1",
 ]
 

@@ -11,7 +11,7 @@ destination's state.json):
 4. only the catalogue metadata changed: add a "metadata" row to the table's change
    log and upload the new file (no diff: the records are the same)
 5. changed (or not yet replicated): diff the previous and new files with
-   fit_changedetector, add a row to the table's change log, upload the new file,
+   DuckDB, add a row to the table's change log, upload the new file,
    then record the check in state.json
 
     python scripts/replicate.py --dest s3://bucket/prefix [--tables a,b] [--force]
@@ -65,8 +65,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import duckdb
-import geopandas
-import pandas
 import pyarrow
 import pyarrow.parquet as pq
 
@@ -374,11 +372,27 @@ def change_summary_parts(table):
 # change detection
 # ---------------------------------------------------------------------------
 
+# columns never compared: BCGW's objectid is regenerated when a table is reloaded.
+# Compared anyway if it is the key or a hash_columns column
+IMPLICIT_IGNORE = ("objectid",)
+
 
 def _type_name(arrow_type):
     if isinstance(arrow_type, pyarrow.ExtensionType):
         return "geometry"
     return str(arrow_type)
+
+
+def _is_numeric(arrow_type):
+    return (
+        pyarrow.types.is_integer(arrow_type)
+        or pyarrow.types.is_floating(arrow_type)
+        or pyarrow.types.is_decimal(arrow_type)
+    )
+
+
+def _quote(name):
+    return '"' + name.replace('"', '""') + '"'
 
 
 def schema_changes(path_a, path_b):
@@ -392,208 +406,207 @@ def schema_changes(path_a, path_b):
     }
 
 
-def read_snapshot(path):
-    """Read a mirror file for fit_changedetector.
+def _hash_value_sql(name, arrow_type):
+    """SQL giving a column's value as text for hashing, the same whatever type
+    bcdata inferred: a whole number is written as an integer (1, not 1.0) whether
+    the column is int64 or double. Geometries are their WKB, as hex."""
+    c = _quote(name)
+    if name == GEOMETRY_COLUMN or pyarrow.types.is_binary(arrow_type):
+        return f"hex({c}::BLOB)"
+    if pyarrow.types.is_integer(arrow_type):
+        return f"{c}::VARCHAR"
+    if _is_numeric(arrow_type):
+        c = f"{c}::DOUBLE"
+        return (
+            f"CASE WHEN {c} = round({c}) AND abs({c}) < 1e18 "
+            f"THEN {c}::BIGINT::VARCHAR ELSE {c}::VARCHAR END"
+        )
+    return f"{c}::VARCHAR"
 
-    Integer columns are read as pandas nullable integers (geopandas would read an
-    integer column with nulls as float64, so its type would depend on whether the
-    download had nulls), and string columns as the "string" dtype.
+
+def hash_key_sql(path, hash_columns):
+    """SQL expression generating the key of each record of a parquet file: the
+    sha256 of its hash_columns values, as a JSON list of text (nulls included).
+
+    Changing how keys are generated changes every generated key: the tables with
+    hash_columns then need rekey.
     """
-    df = geopandas.read_parquet(path)
-    for f in pq.read_schema(path):
-        if pyarrow.types.is_integer(f.type):
-            df[f.name] = df[f.name].astype("Int64")
-        elif pyarrow.types.is_string(f.type) or pyarrow.types.is_large_string(f.type):
-            df[f.name] = df[f.name].astype("string")
-    return df
-
-
-def harmonize_types(df_a, df_b):
-    """Make common columns comparable, returning the columns that can't be compared.
-
-    bcdata infers integer vs float per download (a numeric column is written as
-    int64 only if every value is whole), so a column can be int64 in one file and
-    double in the next. Cast both to Float64 so values compare (and hash) the same.
-    Columns whose types differ in any other way are returned, to be ignored.
-    """
-    incomparable = []
-    for c in df_a.columns.intersection(df_b.columns):
-        if c == GEOMETRY_COLUMN or df_a[c].dtype == df_b[c].dtype:
-            continue
-        if pandas.api.types.is_numeric_dtype(df_a[c]) and pandas.api.types.is_numeric_dtype(
-            df_b[c]
-        ):
-            df_a[c] = df_a[c].astype("Float64")
-            df_b[c] = df_b[c].astype("Float64")
-        else:
-            incomparable.append(c)
-    return incomparable
+    schema = pq.read_schema(path)
+    missing = [c for c in hash_columns if c not in schema.names]
+    if missing:
+        raise ValueError(f"hash_columns not present in data: {missing}")
+    values = ", ".join(_hash_value_sql(c, schema.field(c).type) for c in hash_columns)
+    return f"sha256(to_json([{values}]))"
 
 
 def count_duplicates(path, hash_columns):
-    """Number of records whose hash_columns values repeat an earlier record's.
-
-    A quick check of every download (fit_changedetector only hashes when a file has
-    changed). Values are compared as stored, so geometries that differ by less than
-    fit_changedetector's hashing precision count as distinct here.
-    """
-    columns = ", ".join(f'"{c}"' for c in hash_columns)
+    """Number of records whose generated key repeats an earlier record's"""
     with duckdb.connect() as con:
         return con.sql(
-            f"SELECT count(*) - count(DISTINCT ({columns})) FROM read_parquet(?)",
+            f"SELECT count(*) - count(DISTINCT {hash_key_sql(path, hash_columns)}) "
+            "FROM read_parquet(?)",
             params=[str(path)],
         ).fetchall()[0][0]
 
 
-def add_key(fcd, df, hash_columns, allow_duplicates):
-    """Add the generated key column, returning (df, number of records dropped)"""
-    missing = [c for c in hash_columns if c not in df.columns]
-    if missing:
-        raise ValueError(f"hash_columns not present in data: {missing}")
-    hash_geometry = GEOMETRY_COLUMN in hash_columns
-    n_dropped = int(df.geometry.isna().sum()) if hash_geometry else 0
-    df = fcd.add_hash_key(
-        df,
-        HASH_KEY,
-        hash_columns,
-        # fcd can't hash a missing geometry: drop (and count) those records.
-        # See bcgov/FIT_changedetector#141
-        drop_null_geometry=True if hash_geometry else None,
-        allow_duplicates=allow_duplicates,
-    )
-    return df, n_dropped
+def _comparable(type_a, type_b):
+    if _is_numeric(type_a) and _is_numeric(type_b):
+        return True  # compared as numbers: int64 1 equals double 1.0
+    return _type_name(type_a) == _type_name(type_b)
 
 
-# _change_type values, following the Delta Lake change data feed convention. The
-# number orders the rows of a change file: by type, then key, then preimage first
-CHANGE_TYPE_ORDER = {
-    "insert": (0, 0),
-    "delete": (1, 0),
-    "update_preimage": (2, 0),
-    "update_postimage": (2, 1),
-}
-
-
-def _change_rows(df, mask, change_type):
-    rows = df[mask].copy()
-    rows["_change_type"] = change_type
-    return rows
-
-
-def _key_list(values):
-    """Sorted key values as Python values"""
-    return [v.item() if hasattr(v, "item") else v for v in sorted(values)]
+def _records_geo_metadata(path_a, path_b):
+    """GeoParquet metadata for the changed records, from the two files', or None"""
+    geo = [pq.read_schema(p).metadata or {} for p in (path_a, path_b)]
+    geo = [json.loads(m[b"geo"]) for m in geo if b"geo" in m]
+    if not geo:
+        return None
+    metadata = geo[-1]
+    column = dict(metadata["columns"][GEOMETRY_COLUMN])
+    column.pop("bbox", None)  # a bbox and types describing the records' geometries
+    types = [t for g in geo for t in g["columns"][GEOMETRY_COLUMN].get("geometry_types", [])]
+    column["geometry_types"] = sorted(set(types))
+    return {**metadata, "columns": {GEOMETRY_COLUMN: column}}
 
 
 def diff_files(path_a, path_b, keys, timestamp=None, records=True):
-    """Diff two mirror files, returning (summary dict, changed records or None).
+    """Diff two mirror files with DuckDB, returning (summary dict, changed records
+    as an arrow table, or None).
 
     The summary has the change log's counts and keys columns. Changed records are
     only assembled if records is true.
 
-    keys is the table's KeyConfig. Changed records are full rows from the two files,
-    laid out as a Delta Lake change data feed: the table's columns plus _change_type
-    and _commit_timestamp. An inserted record is its current row (insert), a deleted
-    record its previous row (delete), and an updated record both (update_preimage,
-    update_postimage).
+    keys is the table's KeyConfig. Records are matched by key and compared on the
+    columns in both files, except ignore_columns, IMPLICIT_IGNORE and columns whose
+    type changed in a way that can't be compared (integer to double can be).
+    Geometries are compared exactly (as WKB).
+
+    Changed records are full rows from the two files, laid out as a Delta Lake
+    change data feed: the table's columns plus _change_type and _commit_timestamp.
+    An inserted record is its current row (insert), a deleted record its previous
+    row (delete), and an updated record both (update_preimage, update_postimage).
 
     With allow_duplicates, records sharing a generated key with an earlier record in
-    the same file can't be paired between files. As in fit_changedetector, the first
-    record with each key is compared, and the others are counted and their keys
-    listed (duplicate_keys_previous / duplicate_keys_current), not compared.
+    the same file can't be paired between files. The first record with each key (in
+    file order) is compared, and the others are counted and their keys listed
+    (duplicate_keys_previous / duplicate_keys_current), not compared.
     """
-    import fit_changedetector as fcd
-
-    key, hash_columns, ignore_columns = keys.column, keys.hash_columns, keys.ignore_columns
-
-    df_a = read_snapshot(path_a)
-    df_b = read_snapshot(path_b)
-    incomparable = harmonize_types(df_a, df_b)
-    if hash_columns:
-        bad = sorted(set(incomparable) & set(hash_columns))
+    key = keys.column
+    schema_a, schema_b = pq.read_schema(path_a), pq.read_schema(path_b)
+    common = [c for c in schema_b.names if c in schema_a.names]
+    incomparable = [
+        c for c in common if not _comparable(schema_a.field(c).type, schema_b.field(c).type)
+    ]
+    if keys.hash_columns:
+        bad = sorted(set(incomparable) & set(keys.hash_columns))
         if bad:
             raise ValueError(f"hash_columns changed type and can't be compared: {bad}")
-    dropped = {"previous": 0, "current": 0}
-    if hash_columns:
-        df_a, dropped["previous"] = add_key(fcd, df_a, hash_columns, keys.allow_duplicates)
-        df_b, dropped["current"] = add_key(fcd, df_b, hash_columns, keys.allow_duplicates)
     elif key in incomparable:
         raise ValueError(f"primary key {key} changed type and can't be compared")
+    if key not in common and not keys.hash_columns:
+        raise ValueError(f"primary key {key} not present in both files")
 
-    ignored = [c for c in incomparable + list(ignore_columns) if c != key]
-    ignored = [c for c in dict.fromkeys(ignored) if c in df_a.columns or c in df_b.columns]
-    diff = fcd.gdf_diff(
-        df_a,
-        df_b,
-        key,
-        ignore_fields=ignored or None,
-        allow_duplicates=keys.allow_duplicates,
-        # the mirror is a faithful copy: single to multipart is a change
-        promote_multi=False,
-    )
-    new = set(diff["NEW"][key])
-    deleted = set(diff["DELETED"][key])
-    modified = set()
-    for t in ("MODIFIED_ATTR", "MODIFIED_GEOM", "MODIFIED_BOTH"):
-        modified |= set(diff[t][key])
-    dup_a = df_a[key].duplicated(keep="first")
-    dup_b = df_b[key].duplicated(keep="first")
+    keep = {key, *(keys.hash_columns or [])}
+    implicit = [c for c in IMPLICIT_IGNORE if c not in keep]
+    ignored = [
+        c
+        for c in dict.fromkeys([*incomparable, *keys.ignore_columns, *implicit])
+        if c != key and (c in schema_a.names or c in schema_b.names)
+    ]
+    compared = [c for c in common if c not in ignored and c != key]
 
-    changes = None
-    parts = []
-    if records:
-        # columns whose type changed in a way that can't be compared are written as
-        # text, so the previous and current rows fit one schema
-        for c in incomparable:
-            df_a[c] = df_a[c].astype("string")
-            df_b[c] = df_b[c].astype("string")
-        parts = [
-            _change_rows(df_b, ~dup_b & df_b[key].isin(new), "insert"),
-            _change_rows(df_a, ~dup_a & df_a[key].isin(deleted), "delete"),
-            _change_rows(df_a, ~dup_a & df_a[key].isin(modified), "update_preimage"),
-            _change_rows(df_b, ~dup_b & df_b[key].isin(modified), "update_postimage"),
-        ]
-        parts = [p for p in parts if len(p)]
-    if parts:
-        # current columns first, then any only in the previous file
-        columns = list(
-            dict.fromkeys([*df_b.columns, *df_a.columns, "_change_type", "_commit_timestamp"])
-        )
-        changes = geopandas.GeoDataFrame(
-            pandas.concat(parts, ignore_index=True), geometry=GEOMETRY_COLUMN, crs=df_b.crs
-        )
-        changes["_commit_timestamp"] = pandas.Timestamp(timestamp or datetime.now(tz=UTC))
-        changes = changes[[c for c in columns if c in changes.columns]]
-        # keep the two rows of each updated record together, preimage first
-        order = changes["_change_type"].map(CHANGE_TYPE_ORDER)
-        changes = (
-            changes.assign(_group=order.str[0], _image=order.str[1])
-            .sort_values(["_group", key, "_image"], kind="stable")
-            .drop(columns=["_group", "_image"])
+    con = duckdb.connect(config={"temp_directory": os.path.join(os.path.dirname(path_b), "duckdb")})
+    with con:
+        for name, path, schema in (("a", path_a, schema_a), ("b", path_b, schema_b)):
+            select = "*"
+            if GEOMETRY_COLUMN in schema.names:
+                g = _quote(GEOMETRY_COLUMN)
+                select = f"* REPLACE ({g}::BLOB AS {g})"
+            if keys.hash_columns:
+                select += f", {hash_key_sql(path, keys.hash_columns)} AS {_quote(HASH_KEY)}"
+            # _rn: 1 for the first record with each key, in file order
+            con.execute(
+                f"""CREATE TEMP TABLE {name} AS
+                SELECT * EXCLUDE (file_row_number), row_number() OVER (
+                    PARTITION BY {_quote(key)} ORDER BY file_row_number
+                ) AS _rn
+                FROM (SELECT {select} FROM read_parquet(?, file_row_number = true))""",
+                [str(path)],
+            )
+        k = _quote(key)
+        modified = " OR ".join(f"a.{_quote(c)} IS DISTINCT FROM b.{_quote(c)}" for c in compared)
+        con.execute(
+            f"""CREATE TEMP TABLE diff AS
+            SELECT a.{k} AS key_a, b.{k} AS key_b,
+                CASE WHEN a.{k} IS NULL THEN 'insert'
+                     WHEN b.{k} IS NULL THEN 'delete'
+                     WHEN {modified or "false"} THEN 'update'
+                     ELSE 'unchanged' END AS change
+            FROM (SELECT * FROM a WHERE _rn = 1) a
+            FULL JOIN (SELECT * FROM b WHERE _rn = 1) b ON a.{k} = b.{k}"""
         )
 
-    # records (not rows): an updated record is counted once. Generated keys are
-    # fit_changedetector hashes of hash_columns
+        def key_list(sql):
+            return con.sql(f"SELECT list({k} ORDER BY {k}) FROM ({sql})").fetchall()[0][0] or []
+
+        new = key_list(f"SELECT key_b AS {k} FROM diff WHERE change = 'insert'")
+        deleted = key_list(f"SELECT key_a AS {k} FROM diff WHERE change = 'delete'")
+        updated = key_list(f"SELECT key_a AS {k} FROM diff WHERE change = 'update'")
+        n_unchanged = con.sql("SELECT count(*) FROM diff WHERE change = 'unchanged'").fetchall()
+        dup_a = key_list(f"SELECT {k} FROM a WHERE _rn > 1")
+        dup_b = key_list(f"SELECT {k} FROM b WHERE _rn > 1")
+
+        changes = None
+        if records and (new or deleted or updated):
+            # columns whose type changed in a way that can't be compared are written
+            # as text, so the previous and current rows fit one schema
+            as_text = ", ".join(f"{_quote(c)}::VARCHAR AS {_quote(c)}" for c in incomparable)
+            replace = f" REPLACE ({as_text})" if as_text else ""
+
+            def part(table, change, key_side, change_type, group, image):
+                return f"""SELECT *{replace}, '{change_type}' AS _change_type,
+                    {group} AS _group, {image} AS _image
+                FROM {table} WHERE _rn = 1 AND {k} IN (
+                    SELECT {key_side} FROM diff WHERE change = '{change}')"""
+
+            # current columns first (the first part is from the current file), then
+            # any only in the previous file
+            parts = [
+                part("b", "insert", "key_b", "insert", 0, 0),
+                part("a", "delete", "key_a", "delete", 1, 0),
+                part("a", "update", "key_a", "update_preimage", 2, 0),
+                part("b", "update", "key_b", "update_postimage", 2, 1),
+            ]
+            # ordered by type, then key, preimage first
+            relation = con.sql(
+                f"""SELECT * EXCLUDE (_rn, _group, _image), ?::TIMESTAMPTZ AS _commit_timestamp
+                FROM ({" UNION ALL BY NAME ".join(parts)})
+                ORDER BY _group, {k}, _image""",
+                params=[timestamp or datetime.now(tz=UTC)],
+            )
+            changes = relation.to_arrow_table()
+            geo = _records_geo_metadata(path_a, path_b)
+            if geo:
+                changes = changes.replace_schema_metadata({"geo": json.dumps(geo)})
+
+    # records (not rows): an updated record is counted once
     summary = {
         "inserted": len(new),
         "deleted": len(deleted),
-        "updated": len(modified),
-        "unchanged": len(diff["UNCHANGED"]),
-        "duplicates": int(dup_a.sum() + dup_b.sum()),
-        "inserted_keys": _key_list(new),
-        "deleted_keys": _key_list(deleted),
-        "updated_keys": _key_list(modified),
-        "data_changed": bool(new or deleted or modified),
+        "updated": len(updated),
+        "unchanged": n_unchanged[0][0],
+        "duplicates": len(dup_a) + len(dup_b),
+        "inserted_keys": new,
+        "deleted_keys": deleted,
+        "updated_keys": updated,
+        "data_changed": bool(new or deleted or updated),
         "ignored_columns": ignored,
-        "dropped_null_geometry_previous": dropped["previous"],
-        "dropped_null_geometry_current": dropped["current"],
-        "fit_changedetector_version": fcd.__version__,
     }
     if keys.allow_duplicates:
         # one key per record not compared (only the first record with a key is),
         # by file, so the two lists add up to duplicates
-        summary["duplicate_keys_previous"] = _key_list(df_a.loc[dup_a, key])
-        summary["duplicate_keys_current"] = _key_list(df_b.loc[dup_b, key])
+        summary["duplicate_keys_previous"] = dup_a
+        summary["duplicate_keys_current"] = dup_b
     return summary, changes
 
 
@@ -647,13 +660,10 @@ def change_log_schema(key_type):
             # records
             ("rekeyed", flag),
             ("ignored_columns", strings),
-            ("dropped_null_geometry_previous", count),
-            ("dropped_null_geometry_current", count),
             # path of the changed records, relative to the table's folder
             # (keep_change_records only)
             ("records_file", string),
             ("bcdata_version", string),
-            ("fit_changedetector_version", string),
         ]
     )
 
@@ -890,7 +900,7 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
             row["records_file"] = f"changes/{timestamp}.parquet"
             records_parts = (table, "changes", f"{timestamp}.parquet")
             records_local = os.path.join(tmpdir, "records.parquet")
-            changes.to_parquet(records_local, index=False)
+            pq.write_table(changes, records_local)
         log_local = os.path.join(tmpdir, "change_log.parquet")
         schema = change_log_schema(key_type(new_path, keys))
         log_table = append_change_log(change_log, row, schema, log_local)

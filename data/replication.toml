@@ -15,14 +15,15 @@
 #                 table's change log (<table>/changes.parquet) still has the counts
 #                 and the keys of the inserted, deleted and updated records
 #   hash_columns  for tables with no primary_key in table_metadata.toml: the columns
-#                 hashed (with fit_changedetector) to generate a key for change
-#                 detection. List the columns that identify a record, not descriptive
-#                 ones, and never a regenerated id. Include "geometry" to hash the
-#                 geometry. Not allowed for tables that have a primary_key.
+#                 hashed to generate a key for change detection. List the columns
+#                 that identify a record, not descriptive ones, and never a
+#                 regenerated id. Include "geometry" to hash the geometry (exactly,
+#                 as WKB). Not allowed for tables that have a primary_key.
 #   ignore_columns  columns left out of the comparison, eg an id regenerated on every
 #                 refresh (otherwise every record would be reported as modified).
 #                 Not the primary key, the geometry, or a hash_columns column. The
-#                 mirror file still has these columns.
+#                 mirror file still has these columns. objectid (regenerated when
+#                 BCGW reloads a table) is always ignored, unless in hash_columns.
 #   allow_duplicates  with hash_columns only: true to compare a table where some
 #                 records share hash_columns values (the first is compared, the rest
 #                 are counted and their keys listed in the change log). Default false:
@@ -46,7 +47,7 @@
 
 ["whse_fish.fiss_fish_obsrvtn_pnt_sp"]
 schedule = "weekly"
-# fish_observation_point_id (and objectid, which fit_changedetector always ignores)
+# fish_observation_point_id (and objectid, which is always ignored)
 # are regenerated on refresh. hash_columns are the columns bcfishobs uses for its
 # observation_key (smnorris/bcfishobs sql/process.sql). The UTM columns stand in for
 # the geometry, which is derived from them, so records without geometry are still
