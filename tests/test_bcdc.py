@@ -32,6 +32,11 @@ def test_get_table_definition():
     assert table_definition["description"] == AIRPORTS_DESCRIPTION
     assert table_definition["comments"] == AIRPORTS_COMMENTS
     assert table_definition["schema"] == json.loads(AIRPORTS_SCHEMA)
+    catalogue = table_definition["catalogue"]
+    assert catalogue["url"].startswith("https://catalogue.data.gov.bc.ca/dataset/")
+    assert catalogue["title"]
+    assert catalogue["license"]["title"]
+    assert catalogue["publisher"]
 
 
 def test_get_table_definition_format_multi():
@@ -81,7 +86,16 @@ def test_get_table_definition_nr_districts():
 
 
 def _package(name, notes, resources):
-    return {"name": name, "notes": notes, "resources": resources}
+    return {
+        "name": name,
+        "notes": notes,
+        "resources": resources,
+        "title": f"{name} title",
+        "license_title": "Open Government Licence - British Columbia",
+        "license_url": "https://example.com/ogl-bc",
+        "organization": {"title": f"{name} publisher"},
+        "record_last_modified": "2026-11-25",
+    }
 
 
 def _resource(object_name, details, comments=None):
@@ -118,6 +132,17 @@ def test_get_table_definition_multiple_packages(monkeypatch):
     assert table_definition["description"] == "airports description"
     assert table_definition["schema"] == schema
     assert table_definition["comments"] == "c"
+    # the catalogue record is the matching package's too
+    assert table_definition["catalogue"] == {
+        "title": "airports title",
+        "url": "https://catalogue.data.gov.bc.ca/dataset/airports",
+        "license": {
+            "title": "Open Government Licence - British Columbia",
+            "url": "https://example.com/ogl-bc",
+        },
+        "publisher": "airports publisher",
+        "record_last_modified": "2026-11-25",
+    }
 
 
 def test_get_table_definition_no_schema_single_package(monkeypatch):
@@ -127,3 +152,9 @@ def test_get_table_definition_no_schema_single_package(monkeypatch):
     assert table_definition["description"] == "airports description"
     assert table_definition["schema"] == []
     assert table_definition["comments"] is None
+    assert table_definition["catalogue"]["url"].endswith("/dataset/airports")
+
+
+def test_get_table_definition_no_results(monkeypatch):
+    _mock_search(monkeypatch, [])
+    assert bcdc.get_table_definition(AIRPORTS_TABLE)["catalogue"] is None

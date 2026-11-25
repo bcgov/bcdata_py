@@ -48,6 +48,8 @@ def test_provenance_metadata(airports):
     assert meta["source"] == AIRPORTS_TABLE
     assert meta["feature_count"] == bcdata.get_count(AIRPORTS_TABLE)
     assert meta["columns"]["airport_name"]
+    assert meta["catalogue"]["url"].startswith("https://catalogue.data.gov.bc.ca/dataset/")
+    assert meta["catalogue"]["license"]["title"]
     assert "number_of_runways" in meta["integer_columns_inferred"]
     assert "sequence_id" in meta["integer_columns_inferred"]
     assert "elevation" not in meta["integer_columns_inferred"]
