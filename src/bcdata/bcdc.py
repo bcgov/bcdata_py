@@ -107,7 +107,6 @@ def _catalogue_record(package):
         "url": BCDC_DATASET_URL + name if name else None,
         "license": {"title": package.get("license_title"), "url": package.get("license_url")},
         "publisher": (package.get("organization") or {}).get("title"),
-        "record_last_modified": package.get("record_last_modified"),
     }
 
 
@@ -115,8 +114,7 @@ def get_table_definition(table_name):
     """
     Given a table/object name, search BCDC for the first package/resource with a matching "object_name",
     returns dict: {"description": <>, "comments": <>, "schema": [<columns>], "primary_key": <>,
-    "catalogue": {"title", "url", "license": {"title", "url"}, "publisher",
-    "record_last_modified"}}
+    "catalogue": {"title", "url", "license": {"title", "url"}, "publisher"}}
 
     catalogue is None if no catalogue record matches the table.
     """

@@ -35,8 +35,10 @@ read it with pyarrow.parquet.read_metadata (not read_schema).
 
 It also describes the table, from the BC Data Catalogue record: the description,
 comments and column descriptions, and under "catalogue" the record's title, url,
-license (title and url), publisher and record_last_modified date. None of these
-affect the hashes, so a catalogue edit alone leaves content_hash unchanged.
+license (title and url) and publisher. None of these affect the hashes, so a
+catalogue edit alone leaves content_hash unchanged. The record's last-modified
+date is not included: it changes with edits to fields not written here (eg
+contacts or tags), so a copy of a file would look changed when it is not.
 """
 
 import hashlib
@@ -427,8 +429,7 @@ def to_parquet(
                 "description": table_definition.get("description"),
                 "comments": table_definition.get("comments"),
                 "columns": column_comments,
-                # the BC Data Catalogue record: title, url, license, publisher,
-                # record_last_modified
+                # the BC Data Catalogue record: title, url, license, publisher
                 "catalogue": table_definition.get("catalogue"),
                 # source schemas only declare "number" - these columns were written as
                 # int64 because all of their values in this download are whole numbers
