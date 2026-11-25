@@ -12,6 +12,10 @@ destination's state.json):
 
     python scripts/replicate.py --dest s3://bucket/prefix [--tables a,b] [--force]
 
+Every change record has counts and the keys of the inserted, deleted and updated
+records (change.json). The changed records themselves (changes.parquet) are kept
+only for tables with keep_change_records = true.
+
 The destination is --dest, or the BCDATA_REPLICATION_DEST environment variable. It
 can be any URI pyarrow understands (s3://..., or a local folder for testing).
 Credentials and the S3 endpoint come from the standard AWS environment variables
@@ -20,8 +24,10 @@ Credentials and the S3 endpoint come from the standard AWS environment variables
 Destination layout:
 
     <dest>/<table>.parquet                       latest copy of each table
-    <dest>/changes/<table>/<timestamp>/change.json   summary of one change
-    <dest>/changes/<table>/<timestamp>/changes.parquet  changed records: full rows,
+    <dest>/changes/<table>/<timestamp>/change.json   summary of one change: counts
+                                                  and keys of changed records
+    <dest>/changes/<table>/<timestamp>/changes.parquet  with keep_change_records:
+                                                  changed records as full rows,
                                                   plus _change_type and
                                                   _commit_timestamp (as in a Delta
                                                   Lake change data feed)
@@ -72,7 +78,7 @@ SCHEDULES = {
 # after the start of one run is still due at the start of the run one interval later
 SCHEDULE_TOLERANCE = timedelta(hours=12)
 
-FIELDS = {"schedule", "hash_columns", "ignore_columns", "allow_duplicates"}
+FIELDS = {"schedule", "keep_change_records", "hash_columns", "ignore_columns", "allow_duplicates"}
 GEOMETRY_COLUMN = "geometry"
 # name of the generated key column, in the diff and change records only
 HASH_KEY = "_bcdata_hash_key"
@@ -139,6 +145,8 @@ def load_config(text=None, table_metadata=None):
                 f"{table}: schedule must be one of {list(SCHEDULES)}, "
                 f"got {fields.get('schedule')!r}"
             )
+        if not isinstance(fields.get("keep_change_records", False), bool):
+            raise ConfigError(f"{table}: keep_change_records must be true or false")
         primary_key = table_metadata.get(table, {}).get("primary_key")
         hash_columns = fields.get("hash_columns")
         if hash_columns is not None:
@@ -367,8 +375,16 @@ def _change_rows(df, mask, change_type):
     return rows
 
 
-def diff_files(path_a, path_b, keys, timestamp=None):
+def _json_keys(values):
+    """Sorted key values as JSON-serializable Python values"""
+    return [v.item() if hasattr(v, "item") else v for v in sorted(values)]
+
+
+def diff_files(path_a, path_b, keys, timestamp=None, records=True):
     """Diff two mirror files, returning (summary dict, changed records or None).
+
+    The summary has counts, and the keys of the inserted, deleted and updated
+    records. Changed records are only assembled if records is true.
 
     keys is the table's KeyConfig. Changed records are full rows from the two files,
     laid out as a Delta Lake change data feed: the table's columns plus _change_type
@@ -378,7 +394,8 @@ def diff_files(path_a, path_b, keys, timestamp=None):
 
     With allow_duplicates, records sharing a generated key with an earlier record in
     the same file can't be paired between files. As in fit_changedetector, the first
-    record with each key is compared and the others are only counted.
+    record with each key is compared, and the others are counted and their keys
+    listed (summary keys.duplicate), not compared.
     """
     import fit_changedetector as fcd
 
@@ -417,19 +434,21 @@ def diff_files(path_a, path_b, keys, timestamp=None):
     dup_a = df_a[key].duplicated(keep="first")
     dup_b = df_b[key].duplicated(keep="first")
 
-    # columns whose type changed in a way that can't be compared are written as text,
-    # so the previous and current rows fit one schema
-    for c in incomparable:
-        df_a[c] = df_a[c].astype("string")
-        df_b[c] = df_b[c].astype("string")
-    parts = [
-        _change_rows(df_b, ~dup_b & df_b[key].isin(new), "insert"),
-        _change_rows(df_a, ~dup_a & df_a[key].isin(deleted), "delete"),
-        _change_rows(df_a, ~dup_a & df_a[key].isin(modified), "update_preimage"),
-        _change_rows(df_b, ~dup_b & df_b[key].isin(modified), "update_postimage"),
-    ]
-    parts = [p for p in parts if len(p)]
     changes = None
+    parts = []
+    if records:
+        # columns whose type changed in a way that can't be compared are written as
+        # text, so the previous and current rows fit one schema
+        for c in incomparable:
+            df_a[c] = df_a[c].astype("string")
+            df_b[c] = df_b[c].astype("string")
+        parts = [
+            _change_rows(df_b, ~dup_b & df_b[key].isin(new), "insert"),
+            _change_rows(df_a, ~dup_a & df_a[key].isin(deleted), "delete"),
+            _change_rows(df_a, ~dup_a & df_a[key].isin(modified), "update_preimage"),
+            _change_rows(df_b, ~dup_b & df_b[key].isin(modified), "update_postimage"),
+        ]
+        parts = [p for p in parts if len(p)]
     if parts:
         # current columns first, then any only in the previous file
         columns = list(
@@ -458,11 +477,24 @@ def diff_files(path_a, path_b, keys, timestamp=None):
     }
     summary = {
         "counts": counts,
+        # generated keys are fit_changedetector hashes of hash_columns
+        "keys": {
+            "insert": _json_keys(new),
+            "delete": _json_keys(deleted),
+            "update": _json_keys(modified),
+        },
         "data_changed": bool(new or deleted or modified),
         "ignored_columns": ignored,
         "dropped_null_geometry": dropped,
         "fit_changedetector_version": fcd.__version__,
     }
+    if keys.allow_duplicates:
+        # one key per record not compared (only the first record with a key is),
+        # by file, so the two lists add up to counts["duplicate"]
+        summary["keys"]["duplicate"] = {
+            "previous": _json_keys(df_a.loc[dup_a, key]),
+            "current": _json_keys(df_b.loc[dup_b, key]),
+        }
     return summary, changes
 
 
@@ -545,7 +577,13 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
             dest.download(previous_path, f"{table}.parquet")
             record["kind"] = "changed"
             record["schema_changes"] = schema_changes(previous_path, new_path)
-            summary, changes = diff_files(previous_path, new_path, keys, timestamp=now)
+            summary, changes = diff_files(
+                previous_path,
+                new_path,
+                keys,
+                timestamp=now,
+                records=fields.get("keep_change_records", False),
+            )
             record.update(summary)
             if record["schema_changes"]["added"] or record["schema_changes"]["removed"]:
                 record["data_changed"] = True

@@ -10,6 +10,9 @@
 #
 #   schedule      how often to check the table for changes:
 #                 daily | weekly | monthly | quarterly
+#   keep_change_records  true to keep the changed records (full rows) of each
+#                 change in changes.parquet. Default false: change.json still has
+#                 the counts and the keys of the inserted, deleted and updated records
 #   hash_columns  for tables with no primary_key in table_metadata.toml: the columns
 #                 hashed (with fit_changedetector) to generate a key for change
 #                 detection. List the columns that identify a record, not descriptive
@@ -21,8 +24,9 @@
 #                 mirror file still has these columns.
 #   allow_duplicates  with hash_columns only: true to compare a table where some
 #                 records share hash_columns values (the first is compared, the rest
-#                 are counted). Default false: the table fails if its generated key
-#                 is not unique. A duplicated primary_key always fails the download.
+#                 are counted and their keys listed in change.json). Default false:
+#                 the table fails if its generated key is not unique. A duplicated
+#                 primary_key always fails the download.
 #
 # Every table needs either a primary_key in table_metadata.toml or hash_columns here.
 # All names must be lowercase.

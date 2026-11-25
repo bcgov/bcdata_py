@@ -26,7 +26,7 @@ TABLE = "whse_test.keyed"
 HASHED = "whse_test.hashed"
 TABLE_METADATA = {TABLE: {"primary_key": "id"}, HASHED: {"sort_key": "id"}}
 CONFIG = {
-    TABLE: {"schedule": "weekly"},
+    TABLE: {"schedule": "weekly", "keep_change_records": True},
     HASHED: {"schedule": "weekly", "hash_columns": ["name", "geometry"], "ignore_columns": ["id"]},
 }
 NOW = datetime(2026, 11, 24, 6, 0, tzinfo=UTC)
@@ -105,6 +105,7 @@ def test_bundled_config_is_valid():
         ('["whse_test.hashed"]\nschedule = "weekly"\nhash_columns = []', "list of column names"),
         ('["whse_test.hashed"]\nschedule = "weekly"\nhash_columns = ["A"]', "lowercase"),
         ('["whse_test.keyed"]\nschedule = "weekly"\nquery = "x"', "Unknown field"),
+        ('["whse_test.keyed"]\nschedule = "weekly"\nkeep_change_records = "yes"', "true or false"),
         ('["WHSE_TEST.KEYED"]\nschedule = "weekly"', "lowercase"),
         (
             '["whse_test.keyed"]\nschedule = "weekly"\nallow_duplicates = true',
@@ -177,6 +178,7 @@ def test_initial_unchanged_changed(dest, download):
     counts = record["counts"]
     assert (counts["insert"], counts["delete"], counts["update"]) == (1, 1, 1)
     assert counts["unchanged"] == 1
+    assert record["keys"] == {"insert": [4], "delete": [3], "update": [2]}
     folder = max(Path(dest.path("changes", TABLE)).iterdir())
     assert record["files"] == ["changes.parquet"]
     rows = gpd.read_parquet(folder / "changes.parquet")
@@ -211,6 +213,13 @@ def test_generated_key(dest, download):
     assert (counts["insert"], counts["delete"]) == (2, 2)
     # the mirror file has no generated key
     assert replicate.HASH_KEY not in gpd.read_parquet(dest.path(f"{HASHED}.parquet")).columns
+    # keep_change_records defaults to false: keys (hashes) recorded, but no changed records
+    assert [len(record["keys"][t]) for t in ("insert", "delete", "update")] == [2, 2, 0]
+    assert all(isinstance(k, str) for k in record["keys"]["insert"])
+    assert record["files"] == []
+    assert "duplicate" not in record["keys"]
+    folder = max(Path(dest.path("changes", HASHED)).iterdir())
+    assert not (folder / "changes.parquet").exists()
 
 
 def test_regenerated_id_not_ignored_by_default(dest, download):
@@ -289,7 +298,7 @@ def test_modified_geometry_keeps_previous(dest, download):
 def test_duplicates_allowed(dest, download):
     # two records with the same hashed values can't be paired between files:
     # the first is compared, the second only counted
-    config = {HASHED: {**CONFIG[HASHED], "allow_duplicates": True}}
+    config = {HASHED: {**CONFIG[HASHED], "allow_duplicates": True, "keep_change_records": True}}
     kwargs = {"download": download, "table_metadata": TABLE_METADATA, "tables": [HASHED]}
     download.data = {HASHED: gdf([1, 2, 3], ["a", "a", "b"], geoms=[Point(1, 1)] * 3)}
     assert replicate.run(dest, config, now=NOW, **kwargs) == {}
@@ -304,6 +313,10 @@ def test_duplicates_allowed(dest, download):
         "unchanged": 1,
         "duplicate": 2,
     }
+    # each file's uncompared duplicate is listed by its key (the hash of "a")
+    duplicate = record["keys"]["duplicate"]
+    assert len(duplicate["previous"]) == len(duplicate["current"]) == 1
+    assert duplicate["previous"] == duplicate["current"]
     # duplicates are counted, not written as changes
     folder = max(Path(dest.path("changes", HASHED)).iterdir())
     rows = gpd.read_parquet(folder / "changes.parquet")
