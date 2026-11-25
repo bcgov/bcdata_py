@@ -141,7 +141,6 @@ def test_get_table_definition_multiple_packages(monkeypatch):
             "url": "https://example.com/ogl-bc",
         },
         "publisher": "airports publisher",
-        "record_last_modified": "2026-11-25",
     }
 
 
