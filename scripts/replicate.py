@@ -4,9 +4,13 @@ For each table that is due (per its schedule and the last check recorded in the
 destination's state.json):
 
 1. download the whole table with bcdata.to_parquet to a temp file
-2. compare its content_hash with the file at the destination (footer only)
+2. compare its content_hash, and its catalogue metadata (description, comments,
+   column descriptions, catalogue record), with the file at the destination
+   (footer only)
 3. unchanged: record the check in state.json
-4. changed (or not yet replicated): diff the previous and new files with
+4. only the catalogue metadata changed: add a "metadata" row to the table's change
+   log and upload the new file (no diff: the records are the same)
+5. changed (or not yet replicated): diff the previous and new files with
    fit_changedetector, add a row to the table's change log, upload the new file,
    then record the check in state.json
 
@@ -20,15 +24,18 @@ AWS_SECRET_ACCESS_KEY and AWS_ENDPOINT_URL for S3 (plus AWS_ALLOW_HTTP=true for 
 plain http endpoint), or AZURE_STORAGE_ACCOUNT_NAME and AZURE_STORAGE_ACCOUNT_KEY
 for Azure.
 
-Destination layout:
+Destination layout, a folder per table:
 
-    <dest>/<table>.parquet                    latest copy of each table
-    <dest>/changes/<table>.parquet            change log: one row per change, with
+    <dest>/<table>/<table>.parquet            latest copy of the table
+    <dest>/<table>/changes.parquet            change log: one row per change, with
                                               counts, file summaries, schema changes
                                               and the keys of the changed records
                                               (list columns, so reading only the
                                               summary columns doesn't read them)
-    <dest>/changes/<table>/<timestamp>.parquet  with keep_change_records: the changed
+    <dest>/<table>/changes.json               the change log without the keys, as
+                                              readable JSON (rebuilt from
+                                              changes.parquet on each change)
+    <dest>/<table>/changes/<timestamp>.parquet  with keep_change_records: the changed
                                               records as full rows, plus
                                               _change_type and _commit_timestamp (as
                                               in a Delta Lake change data feed)
@@ -238,7 +245,7 @@ def is_due(fields, state_entry, now):
 
 class Destination:
     """The mirror location: an object store URL (s3://..., az://..., gs://...) or a
-    local folder. Paths within it are given as parts, eg ("changes", "x.parquet")
+    local folder. Paths within it are given as parts, eg (table, "changes.parquet")
 
     store: an obstore store to use instead of one built from uri (eg a MemoryStore)
     """
@@ -333,8 +340,8 @@ class Destination:
         except FileNotFoundError:
             return {}
 
-    def write_json(self, data, *parts):
-        text = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    def write_json(self, data, *parts, sort_keys=True):
+        text = json.dumps(data, indent=2, sort_keys=sort_keys) + "\n"
         obstore.put(self.store, self.key(*parts), text.encode("utf-8"))
 
 
@@ -344,6 +351,19 @@ def read_bcdata_metadata(source):
     if b"bcdata" not in metadata:
         raise ValueError("parquet file has no bcdata metadata")
     return json.loads(metadata[b"bcdata"])
+
+
+def mirror_parts(table):
+    """Path of a table's mirror file in the destination"""
+    return (table, f"{table}.parquet")
+
+
+def change_log_parts(table):
+    return (table, "changes.parquet")
+
+
+def change_summary_parts(table):
+    return (table, "changes.json")
 
 
 # ---------------------------------------------------------------------------
@@ -585,8 +605,11 @@ def change_log_schema(key_type):
     return pyarrow.schema(
         [
             ("_commit_timestamp", pyarrow.timestamp("s", tz="UTC")),
-            ("kind", string),  # initial | changed
+            ("kind", string),  # initial | changed | metadata
             ("data_changed", flag),
+            # catalogue metadata fields (METADATA_FIELDS) that differ from the
+            # previous file. Null for an initial load
+            ("metadata_changed", strings),
             # the previous and new files (bcdata footer metadata)
             ("previous_content_hash", string),
             ("current_content_hash", string),
@@ -622,13 +645,24 @@ def change_log_schema(key_type):
             ("ignored_columns", strings),
             ("dropped_null_geometry_previous", count),
             ("dropped_null_geometry_current", count),
-            # path of the changed records, relative to the destination
+            # path of the changed records, relative to the table's folder
             # (keep_change_records only)
             ("records_file", string),
             ("bcdata_version", string),
             ("fit_changedetector_version", string),
         ]
     )
+
+
+# bcdata footer fields describing the table, from the BC Data Catalogue. They
+# aren't part of content_hash, so an edit to the catalogue record alone is found
+# by comparing them
+METADATA_FIELDS = ("description", "comments", "columns", "catalogue")
+
+
+def metadata_changes(previous_meta, new_meta):
+    """Names of the METADATA_FIELDS that differ between two files' footers"""
+    return [f for f in METADATA_FIELDS if previous_meta.get(f) != new_meta.get(f)]
 
 
 def key_type(path, keys):
@@ -659,7 +693,7 @@ def _keys_as_strings(log_table):
 
 def read_change_log(dest, table, local_path):
     """The table's change log and its ETag, or (None, None) if it has none"""
-    parts = ("changes", f"{table}.parquet")
+    parts = change_log_parts(table)
     if not dest.exists(*parts):
         return None, None
     e_tag = dest.download(local_path, *parts)
@@ -698,25 +732,6 @@ def check_key(table, keys, change_log, rekey):
     return True
 
 
-# change log columns holding key values
-KEY_LIST_COLUMNS = (
-    "inserted_keys",
-    "deleted_keys",
-    "updated_keys",
-    "duplicate_keys_previous",
-    "duplicate_keys_current",
-)
-
-
-def _keys_as_strings(log_table):
-    string_keys = pyarrow.list_(pyarrow.string())
-    for name in KEY_LIST_COLUMNS:
-        i = log_table.schema.get_field_index(name)
-        if i >= 0:
-            log_table = log_table.set_column(i, name, log_table[name].cast(string_keys))
-    return log_table
-
-
 def append_change_log(change_log, row, schema, local_path):
     """Write the change log (or None) with a row added, to local_path.
 
@@ -738,6 +753,25 @@ def append_change_log(change_log, row, schema, local_path):
                 promote_options="permissive",
             )
     pq.write_table(log_table, local_path)
+    return log_table
+
+
+def _json_value(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def change_summary(table, log_table):
+    """The change log without its key columns, as a JSON-serializable dict"""
+    columns = [c for c in log_table.column_names if c not in KEY_LIST_COLUMNS]
+    changes = []
+    for row in log_table.select(columns).to_pylist():
+        row = {k: _json_value(v) for k, v in row.items()}
+        if row.get("columns_retyped"):
+            row["columns_retyped"] = json.loads(row["columns_retyped"])
+        changes.append(row)
+    return {"table": table, "changes": changes}
 
 
 def replicate_table(dest, table, fields, now, download=None, table_metadata=None):
@@ -759,14 +793,18 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
                     "another record. Add columns to hash_columns, or set "
                     "allow_duplicates = true"
                 )
-        previous_meta = dest.read_bcdata_metadata(f"{table}.parquet")
+        previous_meta = dest.read_bcdata_metadata(*mirror_parts(table))
         entry = {
             "checked": now.isoformat(timespec="seconds"),
             "content_hash": new_meta["content_hash"],
             "feature_count": new_meta["feature_count"],
         }
 
-        if previous_meta and previous_meta["content_hash"] == new_meta["content_hash"]:
+        same_content = bool(previous_meta) and (
+            previous_meta["content_hash"] == new_meta["content_hash"]
+        )
+        changed_metadata = metadata_changes(previous_meta, new_meta) if previous_meta else None
+        if same_content and not changed_metadata:
             log.info(f"{table}: unchanged ({new_meta['feature_count']} features)")
             entry["status"] = "unchanged"
             return entry
@@ -784,6 +822,7 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
             "key_generated": bool(keys.hash_columns),
             "hash_columns": keys.hash_columns,
             "allow_duplicates": keys.allow_duplicates,
+            "metadata_changed": changed_metadata,
             "bcdata_version": bcdata.__version__,
         }
         for prefix, meta in (("previous", previous_meta), ("current", new_meta)):
@@ -794,9 +833,15 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
             log.info(f"{table}: initial load ({new_meta['feature_count']} features)")
             row["kind"] = "initial"
             row["data_changed"] = True
+        elif same_content:
+            # same records, new description: replace the file so its footer is
+            # current. Nothing to diff
+            log.info(f"{table}: metadata changed {changed_metadata}")
+            row["kind"] = "metadata"
+            row["data_changed"] = False
         else:
             previous_path = os.path.join(tmpdir, "previous.parquet")
-            dest.download(previous_path, f"{table}.parquet")
+            dest.download(previous_path, *mirror_parts(table))
             row["kind"] = "changed"
             columns = schema_changes(previous_path, new_path)
             summary, changes = diff_files(
@@ -819,24 +864,28 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
         # leave a records file the log doesn't list. Then upload the records file,
         # the log, and the mirror file last, so every uploaded mirror file has a
         # change log row. The log is only replaced if it hasn't changed since it was
-        # read: two overlapping runs would otherwise each drop the other's row
-        records_local = None
+        # read: two overlapping runs would otherwise each drop the other's row. The
+        # JSON summary is rebuilt from the log, so it is written unconditionally
+        records_local = records_parts = None
         if changes is not None:
-            row["records_file"] = f"changes/{table}/{timestamp}.parquet"
+            row["records_file"] = f"changes/{timestamp}.parquet"
+            records_parts = (table, "changes", f"{timestamp}.parquet")
             records_local = os.path.join(tmpdir, "records.parquet")
             changes.to_parquet(records_local, index=False)
         log_local = os.path.join(tmpdir, "change_log.parquet")
         schema = change_log_schema(key_type(new_path, keys))
-        append_change_log(change_log, row, schema, log_local)
+        log_table = append_change_log(change_log, row, schema, log_local)
+        summary = change_summary(table, log_table)
         if records_local:
-            dest.upload(records_local, *row["records_file"].split("/"))
+            dest.upload(records_local, *records_parts)
         try:
-            dest.replace(log_local, "changes", f"{table}.parquet", e_tag=log_e_tag)
+            dest.replace(log_local, *change_log_parts(table), e_tag=log_e_tag)
         except ConcurrentWriteError:
             if records_local:
-                dest.delete(*row["records_file"].split("/"))
+                dest.delete(*records_parts)
             raise
-        dest.upload(new_path, f"{table}.parquet")
+        dest.write_json(summary, *change_summary_parts(table), sort_keys=False)
+        dest.upload(new_path, *mirror_parts(table))
         entry["status"] = row["kind"]
         entry["changed"] = now.isoformat(timespec="seconds")
         return entry

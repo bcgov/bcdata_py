@@ -1,7 +1,7 @@
 # Tables replicated to the GeoParquet mirror by scripts/replicate.py.
 #
 # Each entry is a table name in quotes and brackets. The whole table is replicated
-# (no attribute or bbox filters) to <destination>/<table>.parquet.
+# (no attribute or bbox filters) to <destination>/<table>/<table>.parquet.
 #
 #   ["whse_fish.pscis_assessment_svw"]
 #   schedule = "weekly"
@@ -11,8 +11,8 @@
 #   schedule      how often to check the table for changes:
 #                 daily | weekly | monthly | quarterly
 #   keep_change_records  true to keep the changed records (full rows) of each
-#                 change, in changes/<table>/<timestamp>.parquet. Default false: the
-#                 table's change log (changes/<table>.parquet) still has the counts
+#                 change, in <table>/changes/<timestamp>.parquet. Default false: the
+#                 table's change log (<table>/changes.parquet) still has the counts
 #                 and the keys of the inserted, deleted and updated records
 #   hash_columns  for tables with no primary_key in table_metadata.toml: the columns
 #                 hashed (with fit_changedetector) to generate a key for change

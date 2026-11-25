@@ -50,6 +50,8 @@ class FakeDownload:
 
     def __init__(self):
         self.data = {}
+        # catalogue metadata written to each table's footer, {table: {field: value}}
+        self.metadata = {}
 
     def __call__(self, table, out_path):
         df = self.data[table]
@@ -63,6 +65,11 @@ class FakeDownload:
             "feature_count": len(df),
             "downloaded": NOW.isoformat(),
             "bcdata_version": "test",
+            "description": "a test table",
+            "comments": None,
+            "columns": {"id": "the id", "name": "a name"},
+            "catalogue": {"title": "Test table", "license": {"title": "OGL-BC"}},
+            **self.metadata.get(table, {}),
         }
         pq.write_table(
             table_.replace_schema_metadata({**meta, b"bcdata": json.dumps(bcdata_meta)}),
@@ -105,12 +112,12 @@ def listed(dest, *parts):
 
 def changes(dest, table):
     """Rows of a table's change log"""
-    return read_table(dest, "changes", f"{table}.parquet").to_pylist()
+    return [{**r, "_table": table} for r in read_table(dest, table, "changes.parquet").to_pylist()]
 
 
 def records(dest, record):
     """The changed records file of a change log row"""
-    return read_gdf(dest, *record["records_file"].split("/"))
+    return read_gdf(dest, record["_table"], *record["records_file"].split("/"))
 
 
 # ---- configuration ----
@@ -172,7 +179,7 @@ def test_initial_unchanged_changed(dest, download):
         HASHED: gdf([1, 2], ["a", "b"]),
     }
     assert run(dest, download) == {}
-    assert dest.exists(f"{TABLE}.parquet")
+    assert dest.exists(TABLE, f"{TABLE}.parquet")
     state = dest.read_json("state.json")
     assert state[TABLE]["status"] == "initial"
     assert changes(dest, TABLE)[0]["kind"] == "initial"
@@ -205,7 +212,7 @@ def test_initial_unchanged_changed(dest, download):
     assert record["inserted_keys"] == [4]
     assert record["deleted_keys"] == [3]
     assert record["updated_keys"] == [2]
-    assert record["records_file"] == f"changes/{TABLE}/20261208T060000Z.parquet"
+    assert record["records_file"] == "changes/20261208T060000Z.parquet"
     rows = records(dest, record)
     assert list(rows.columns) == ["id", "name", "geometry", "_change_type", "_commit_timestamp"]
     # ordered by type, then key, preimage before postimage
@@ -216,8 +223,18 @@ def test_initial_unchanged_changed(dest, download):
         ("update_postimage", 2, "B"),
     ]
     assert (rows["_commit_timestamp"] == later).all()
+    # changes.json: the log without the keys, readable
+    summary = dest.read_json(TABLE, "changes.json")
+    assert summary["table"] == TABLE
+    assert [c["kind"] for c in summary["changes"]] == ["initial", "changed"]
+    last = summary["changes"][-1]
+    assert last["_commit_timestamp"] == later.isoformat()
+    assert (last["inserted"], last["deleted"], last["updated"]) == (1, 1, 1)
+    assert last["records_file"] == "changes/20261208T060000Z.parquet"
+    assert not any(k.endswith("_keys") or k.startswith("duplicate_keys") for k in last)
+    assert list(last)[:2] == ["_commit_timestamp", "kind"]  # log column order
     # the mirror is the new download
-    assert len(read_gdf(dest, f"{TABLE}.parquet")) == 3
+    assert len(read_gdf(dest, TABLE, f"{TABLE}.parquet")) == 3
 
 
 def test_generated_key(dest, download):
@@ -238,12 +255,12 @@ def test_generated_key(dest, download):
     assert record["unchanged"] == 1
     assert (record["inserted"], record["deleted"]) == (2, 2)
     # the mirror file has no generated key
-    assert replicate.HASH_KEY not in read_gdf(dest, f"{HASHED}.parquet").columns
+    assert replicate.HASH_KEY not in read_gdf(dest, HASHED, f"{HASHED}.parquet").columns
     # keep_change_records defaults to false: keys (hashes) recorded, but no changed records
     assert [len(record[f"{t}_keys"]) for t in ("inserted", "deleted", "updated")] == [2, 2, 0]
     assert all(isinstance(k, str) for k in record["inserted_keys"])
     assert record["records_file"] is None
-    assert listed(dest, "changes", HASHED) == []
+    assert listed(dest, HASHED, "changes") == []
     assert record["duplicate_keys_previous"] is None
     # the log has a row for each change, the initial load first
     assert [r["kind"] for r in changes(dest, HASHED)] == ["initial", "changed"]
@@ -281,6 +298,8 @@ def test_int_float_flip(dest, download):
     assert run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE]) == {}
     record = changes(dest, TABLE)[-1]
     assert json.loads(record["columns_retyped"]) == {"value": ["int64", "double"]}
+    retyped = dest.read_json(TABLE, "changes.json")["changes"][-1]["columns_retyped"]
+    assert retyped == {"value": ["int64", "double"]}
     assert record["columns_added"] == record["columns_removed"] == []
     assert record["updated"] == 1
     assert record["unchanged"] == 1
@@ -352,7 +371,7 @@ def test_duplicates_not_allowed(dest, download):
     failures = run(dest, download, tables=[HASHED])
     assert "DuplicateKeyError" in failures[HASHED]
     assert "allow_duplicates" in failures[HASHED]
-    assert not dest.exists(f"{HASHED}.parquet")
+    assert not dest.exists(HASHED, f"{HASHED}.parquet")
 
 
 def test_key_type_change_keeps_log(dest, download):
@@ -373,7 +392,7 @@ def test_key_type_change_keeps_log(dest, download):
     assert [r["rekeyed"] for r in rows] == [False, False, True]
     assert rows[1]["updated_keys"] == ["2"]
     assert len(rows[2]["inserted_keys"]) == len(rows[2]["deleted_keys"]) == 1
-    log_schema = read_table(dest, "changes", f"{TABLE}.parquet").schema
+    log_schema = read_table(dest, TABLE, "changes.parquet").schema
     assert log_schema.field("updated_keys").type == pyarrow.list_(pyarrow.string())
 
 
@@ -388,7 +407,7 @@ def test_rekey(dest, download, caplog):
     assert "RekeyError" in failures[HASHED]
     assert "rekey = true" in failures[HASHED]
     assert len(changes(dest, HASHED)) == 1
-    assert read_gdf(dest, f"{HASHED}.parquet")["name"].tolist() == ["a", "b"]
+    assert read_gdf(dest, HASHED, f"{HASHED}.parquet")["name"].tolist() == ["a", "b"]
 
     # accepted with rekey: the diff uses the new key for both files
     edited[HASHED]["rekey"] = True
@@ -415,10 +434,10 @@ def test_failed_log_leaves_no_records_file(dest, download, monkeypatch):
 
     monkeypatch.setattr(replicate, "append_change_log", fail)
     assert "log failed" in run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])[TABLE]
-    assert listed(dest, "changes", TABLE) == []
+    assert listed(dest, TABLE, "changes") == []
     assert len(changes(dest, TABLE)) == 1
     # the mirror is unchanged
-    assert read_gdf(dest, f"{TABLE}.parquet")["name"].tolist() == ["a"]
+    assert read_gdf(dest, TABLE, f"{TABLE}.parquet")["name"].tolist() == ["a"]
 
 
 @pytest.mark.parametrize("log_exists", [True, False])
@@ -429,12 +448,12 @@ def test_change_log_written_meanwhile(download, monkeypatch, log_exists):
     download.data = {TABLE: gdf([1], ["a"])}
     run(dest, download, tables=[TABLE])
     if not log_exists:
-        dest.delete("changes", f"{TABLE}.parquet")
+        dest.delete(TABLE, "changes.parquet")
     read_change_log = replicate.read_change_log
 
     def read_then_overwrite(dest_, table, local_path):
         result = read_change_log(dest_, table, local_path)
-        obstore.put(dest_.store, f"changes/{table}.parquet", b"another run")
+        obstore.put(dest_.store, f"{table}/changes.parquet", b"another run")
         return result
 
     monkeypatch.setattr(replicate, "read_change_log", read_then_overwrite)
@@ -442,23 +461,81 @@ def test_change_log_written_meanwhile(download, monkeypatch, log_exists):
     failures = run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])
     assert "ConcurrentWriteError" in failures[TABLE]
     # the other run's log is kept, this run's records file removed, mirror unchanged
-    assert dest.read_bytes("changes", f"{TABLE}.parquet") == b"another run"
-    assert listed(dest, "changes", TABLE) == []
-    assert read_gdf(dest, f"{TABLE}.parquet")["name"].tolist() == ["a"]
+    assert dest.read_bytes(TABLE, "changes.parquet") == b"another run"
+    assert listed(dest, TABLE, "changes") == []
+    assert read_gdf(dest, TABLE, f"{TABLE}.parquet")["name"].tolist() == ["a"]
+
+
+def test_metadata_changed(dest, download):
+    download.data = {TABLE: gdf([1, 2], ["a", "b"])}
+    run(dest, download, tables=[TABLE])
+    assert changes(dest, TABLE)[0]["metadata_changed"] is None
+
+    # the catalogue record is edited, the records are not
+    later = NOW + timedelta(days=7)
+    download.metadata[TABLE] = {
+        "catalogue": {"title": "Test table", "license": {"title": "Access Only"}},
+        "columns": {"id": "the id", "name": "the name"},
+    }
+    assert run(dest, download, now=later, tables=[TABLE]) == {}
+    state = dest.read_json("state.json")[TABLE]
+    assert state["status"] == "metadata"
+    assert state["changed"] == later.isoformat()
+    record = changes(dest, TABLE)[-1]
+    assert record["kind"] == "metadata"
+    assert not record["data_changed"]
+    assert record["metadata_changed"] == ["columns", "catalogue"]
+    assert record["previous_content_hash"] == record["current_content_hash"]
+    assert record["inserted"] is None
+    assert record["records_file"] is None
+    assert listed(dest, TABLE, "changes") == []
+    # the mirror's footer is the new one
+    footer = dest.read_bcdata_metadata(TABLE, f"{TABLE}.parquet")
+    assert footer["catalogue"]["license"]["title"] == "Access Only"
+    assert dest.read_json(TABLE, "changes.json")["changes"][-1]["metadata_changed"] == [
+        "columns",
+        "catalogue",
+    ]
+
+    # checked again, nothing new
+    run(dest, download, now=later + timedelta(days=7), tables=[TABLE])
+    assert dest.read_json("state.json")[TABLE]["status"] == "unchanged"
+    assert len(changes(dest, TABLE)) == 2
+
+    # data and metadata changed together: one changed row naming both
+    download.data[TABLE] = gdf([1, 2], ["a", "B"])
+    download.metadata[TABLE]["description"] = "edited"
+    run(dest, download, now=later + timedelta(days=14), tables=[TABLE])
+    record = changes(dest, TABLE)[-1]
+    assert record["kind"] == "changed"
+    assert record["metadata_changed"] == ["description"]
+    assert record["updated_keys"] == [2]
+
+
+def test_metadata_change_checks_key(dest, download):
+    # a metadata row records the key too, so a key edit still needs rekey
+    download.data = {HASHED: gdf([1, 2], ["a", "b"])}
+    run(dest, download, tables=[HASHED])
+    download.metadata[HASHED] = {"description": "edited"}
+    edited = {HASHED: {**CONFIG[HASHED], "hash_columns": ["name"]}}
+    kwargs = {"download": download, "table_metadata": TABLE_METADATA, "tables": [HASHED]}
+    failures = replicate.run(dest, edited, now=NOW + timedelta(days=7), **kwargs)
+    assert "RekeyError" in failures[HASHED]
+    assert len(changes(dest, HASHED)) == 1
 
 
 def test_hash_changed_data_unchanged(dest, download):
     # eg a bcdata upgrade changes how files are written: every hash changes once
     download.data = {TABLE: gdf([1], ["a"])}
     run(dest, download, tables=[TABLE])
-    data = dest.read_bytes(f"{TABLE}.parquet")
+    data = dest.read_bytes(TABLE, f"{TABLE}.parquet")
     t = pq.read_table(io.BytesIO(data))
     meta = pq.read_metadata(io.BytesIO(data)).metadata
     bcdata_meta = json.loads(meta[b"bcdata"])
     bcdata_meta["content_hash"] = "sha256:other"
     buf = io.BytesIO()
     pq.write_table(t.replace_schema_metadata({**meta, b"bcdata": json.dumps(bcdata_meta)}), buf)
-    obstore.put(dest.store, f"{TABLE}.parquet", buf.getvalue())
+    obstore.put(dest.store, f"{TABLE}/{TABLE}.parquet", buf.getvalue())
     run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])
     record = changes(dest, TABLE)[-1]
     assert record["kind"] == "changed"
