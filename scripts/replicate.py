@@ -7,14 +7,10 @@ destination's state.json):
 2. compare its content_hash with the file at the destination (footer only)
 3. unchanged: record the check in state.json
 4. changed (or not yet replicated): diff the previous and new files with
-   fit_changedetector, write a change record, upload the new file, then record
-   the check in state.json
+   fit_changedetector, add a row to the table's change log, upload the new file,
+   then record the check in state.json
 
     python scripts/replicate.py --dest s3://bucket/prefix [--tables a,b] [--force]
-
-Every change record has counts and the keys of the inserted, deleted and updated
-records (change.json). The changed records themselves (changes.parquet) are kept
-only for tables with keep_change_records = true.
 
 The destination is --dest, or the BCDATA_REPLICATION_DEST environment variable. It
 can be any URI pyarrow understands (s3://..., or a local folder for testing).
@@ -23,15 +19,20 @@ Credentials and the S3 endpoint come from the standard AWS environment variables
 
 Destination layout:
 
-    <dest>/<table>.parquet                       latest copy of each table
-    <dest>/changes/<table>/<timestamp>/change.json   summary of one change: counts
-                                                  and keys of changed records
-    <dest>/changes/<table>/<timestamp>/changes.parquet  with keep_change_records:
-                                                  changed records as full rows,
-                                                  plus _change_type and
-                                                  _commit_timestamp (as in a Delta
-                                                  Lake change data feed)
-    <dest>/state.json                            last check of each table
+    <dest>/<table>.parquet                    latest copy of each table
+    <dest>/changes/<table>.parquet            change log: one row per change, with
+                                              counts, file summaries, schema changes
+                                              and the keys of the changed records
+                                              (list columns, so reading only the
+                                              summary columns doesn't read them)
+    <dest>/changes/<table>/<timestamp>.parquet  with keep_change_records: the changed
+                                              records as full rows, plus
+                                              _change_type and _commit_timestamp (as
+                                              in a Delta Lake change data feed)
+    <dest>/state.json                         last check of each table
+
+The change log is rewritten (downloaded, appended to and uploaded) on each change:
+S3 has no append.
 
 Mirror files are written by bcdata.to_parquet unchanged. Keys generated for tables
 without a primary key (hash_columns) exist only in the diff and the change records.
@@ -78,7 +79,14 @@ SCHEDULES = {
 # after the start of one run is still due at the start of the run one interval later
 SCHEDULE_TOLERANCE = timedelta(hours=12)
 
-FIELDS = {"schedule", "keep_change_records", "hash_columns", "ignore_columns", "allow_duplicates"}
+FIELDS = {
+    "schedule",
+    "keep_change_records",
+    "hash_columns",
+    "ignore_columns",
+    "allow_duplicates",
+    "rekey",
+}
 GEOMETRY_COLUMN = "geometry"
 # name of the generated key column, in the diff and change records only
 HASH_KEY = "_bcdata_hash_key"
@@ -90,6 +98,10 @@ class ConfigError(ValueError):
 
 class DuplicateKeyError(ValueError):
     """A generated key is not unique, and the table does not allow duplicates"""
+
+
+class RekeyError(ValueError):
+    """A table's key changed since its last change log row, and rekey is not set"""
 
 
 @dataclass(frozen=True)
@@ -145,8 +157,9 @@ def load_config(text=None, table_metadata=None):
                 f"{table}: schedule must be one of {list(SCHEDULES)}, "
                 f"got {fields.get('schedule')!r}"
             )
-        if not isinstance(fields.get("keep_change_records", False), bool):
-            raise ConfigError(f"{table}: keep_change_records must be true or false")
+        for flag in ("keep_change_records", "rekey"):
+            if not isinstance(fields.get(flag, False), bool):
+                raise ConfigError(f"{table}: {flag} must be true or false")
         primary_key = table_metadata.get(table, {}).get("primary_key")
         hash_columns = fields.get("hash_columns")
         if hash_columns is not None:
@@ -375,16 +388,16 @@ def _change_rows(df, mask, change_type):
     return rows
 
 
-def _json_keys(values):
-    """Sorted key values as JSON-serializable Python values"""
+def _key_list(values):
+    """Sorted key values as Python values"""
     return [v.item() if hasattr(v, "item") else v for v in sorted(values)]
 
 
 def diff_files(path_a, path_b, keys, timestamp=None, records=True):
     """Diff two mirror files, returning (summary dict, changed records or None).
 
-    The summary has counts, and the keys of the inserted, deleted and updated
-    records. Changed records are only assembled if records is true.
+    The summary has the change log's counts and keys columns. Changed records are
+    only assembled if records is true.
 
     keys is the table's KeyConfig. Changed records are full rows from the two files,
     laid out as a Delta Lake change data feed: the table's columns plus _change_type
@@ -395,7 +408,7 @@ def diff_files(path_a, path_b, keys, timestamp=None, records=True):
     With allow_duplicates, records sharing a generated key with an earlier record in
     the same file can't be paired between files. As in fit_changedetector, the first
     record with each key is compared, and the others are counted and their keys
-    listed (summary keys.duplicate), not compared.
+    listed (duplicate_keys_previous / duplicate_keys_current), not compared.
     """
     import fit_changedetector as fcd
 
@@ -467,34 +480,28 @@ def diff_files(path_a, path_b, keys, timestamp=None, records=True):
             .drop(columns=["_group", "_image"])
         )
 
-    # records (not rows): an updated record is counted once
-    counts = {
-        "insert": len(new),
-        "delete": len(deleted),
-        "update": len(modified),
-        "unchanged": len(diff["UNCHANGED"]),
-        "duplicate": int(dup_a.sum() + dup_b.sum()),
-    }
+    # records (not rows): an updated record is counted once. Generated keys are
+    # fit_changedetector hashes of hash_columns
     summary = {
-        "counts": counts,
-        # generated keys are fit_changedetector hashes of hash_columns
-        "keys": {
-            "insert": _json_keys(new),
-            "delete": _json_keys(deleted),
-            "update": _json_keys(modified),
-        },
+        "inserted": len(new),
+        "deleted": len(deleted),
+        "updated": len(modified),
+        "unchanged": len(diff["UNCHANGED"]),
+        "duplicates": int(dup_a.sum() + dup_b.sum()),
+        "inserted_keys": _key_list(new),
+        "deleted_keys": _key_list(deleted),
+        "updated_keys": _key_list(modified),
         "data_changed": bool(new or deleted or modified),
         "ignored_columns": ignored,
-        "dropped_null_geometry": dropped,
+        "dropped_null_geometry_previous": dropped["previous"],
+        "dropped_null_geometry_current": dropped["current"],
         "fit_changedetector_version": fcd.__version__,
     }
     if keys.allow_duplicates:
         # one key per record not compared (only the first record with a key is),
-        # by file, so the two lists add up to counts["duplicate"]
-        summary["keys"]["duplicate"] = {
-            "previous": _json_keys(df_a.loc[dup_a, key]),
-            "current": _json_keys(df_b.loc[dup_b, key]),
-        }
+        # by file, so the two lists add up to duplicates
+        summary["duplicate_keys_previous"] = _key_list(df_a.loc[dup_a, key])
+        summary["duplicate_keys_current"] = _key_list(df_b.loc[dup_b, key])
     return summary, changes
 
 
@@ -503,24 +510,166 @@ def diff_files(path_a, path_b, keys, timestamp=None, records=True):
 # ---------------------------------------------------------------------------
 
 
-def _file_summary(meta):
-    if not meta:
+def change_log_schema(key_type):
+    """Schema of a table's change log, given the arrow type of its key"""
+    string, count, flag = pyarrow.string(), pyarrow.int64(), pyarrow.bool_()
+    keys, strings = pyarrow.list_(key_type), pyarrow.list_(string)
+    return pyarrow.schema(
+        [
+            ("_commit_timestamp", pyarrow.timestamp("s", tz="UTC")),
+            ("kind", string),  # initial | changed
+            ("data_changed", flag),
+            # the previous and new files (bcdata footer metadata)
+            ("previous_content_hash", string),
+            ("current_content_hash", string),
+            ("previous_schema_hash", string),
+            ("current_schema_hash", string),
+            ("previous_feature_count", count),
+            ("current_feature_count", count),
+            ("previous_downloaded", string),
+            ("current_downloaded", string),
+            # records, not rows. Null for an initial load (nothing to compare with)
+            ("inserted", count),
+            ("deleted", count),
+            ("updated", count),
+            ("unchanged", count),
+            ("duplicates", count),
+            ("inserted_keys", keys),
+            ("deleted_keys", keys),
+            ("updated_keys", keys),
+            ("duplicate_keys_previous", keys),  # allow_duplicates only
+            ("duplicate_keys_current", keys),
+            ("columns_added", strings),
+            ("columns_removed", strings),
+            ("columns_retyped", string),  # JSON: {column: [previous type, new type]}
+            # how records were matched
+            ("key_column", string),
+            ("key_generated", flag),
+            ("hash_columns", strings),
+            ("allow_duplicates", flag),
+            # the key (key_column / hash_columns) changed since the previous row,
+            # accepted with rekey. Keys before and after don't refer to the same
+            # records
+            ("rekeyed", flag),
+            ("ignored_columns", strings),
+            ("dropped_null_geometry_previous", count),
+            ("dropped_null_geometry_current", count),
+            # path of the changed records, relative to the destination
+            # (keep_change_records only)
+            ("records_file", string),
+            ("bcdata_version", string),
+            ("fit_changedetector_version", string),
+        ]
+    )
+
+
+def key_type(path, keys):
+    """Arrow type of a table's key, in the change log"""
+    if keys.hash_columns:
+        return pyarrow.string()
+    return pq.read_schema(path).field(keys.column).type
+
+
+# change log columns holding key values
+KEY_LIST_COLUMNS = (
+    "inserted_keys",
+    "deleted_keys",
+    "updated_keys",
+    "duplicate_keys_previous",
+    "duplicate_keys_current",
+)
+
+
+def _keys_as_strings(log_table):
+    string_keys = pyarrow.list_(pyarrow.string())
+    for name in KEY_LIST_COLUMNS:
+        i = log_table.schema.get_field_index(name)
+        if i >= 0:
+            log_table = log_table.set_column(i, name, log_table[name].cast(string_keys))
+    return log_table
+
+
+def read_change_log(dest, table, local_path):
+    """The table's change log, or None if it has none"""
+    parts = ("changes", f"{table}.parquet")
+    if not dest.exists(*parts):
         return None
-    return {
-        k: meta.get(k)
-        for k in ("content_hash", "schema_hash", "feature_count", "downloaded", "bcdata_version")
-    }
+    dest.download(local_path, *parts)
+    return pq.read_table(local_path)
 
 
-def write_change_record(dest, table, timestamp, record, changes, tmpdir):
-    """Write change.json and changes.parquet under changes/<table>/<timestamp>/"""
-    record["files"] = []
-    if changes is not None:
-        local = os.path.join(tmpdir, "changes.parquet")
-        changes.to_parquet(local, index=False)
-        dest.upload(local, "changes", table, timestamp, "changes.parquet")
-        record["files"].append("changes.parquet")
-    dest.write_json(record, "changes", table, timestamp, "change.json")
+def check_key(table, keys, change_log, rekey):
+    """Compare the table's key with the last change log row's.
+
+    Returns True if the key changed (and rekey allows it). Raises RekeyError if it
+    changed and rekey is not set: keys before and after the change would not refer
+    to the same records, eg after hash_columns is edited every record is reported
+    as deleted and inserted.
+    """
+    if change_log is None or change_log.num_rows == 0:
+        return False
+    last = change_log.slice(change_log.num_rows - 1).to_pylist()[0]
+    previous = (last["key_column"], last["hash_columns"])
+    current = (keys.column, keys.hash_columns)
+    if previous == current:
+        if rekey:
+            log.warning(f"{table}: rekey is set but the key is unchanged, remove it")
+        return False
+
+    def describe(column, hash_columns):
+        return f"hash of {hash_columns}" if hash_columns else f"primary key {column}"
+
+    if not rekey:
+        raise RekeyError(
+            f"{table}: key changed from {describe(*previous)} to {describe(*current)} "
+            "since the last change. Keys logged before and after won't refer to the "
+            "same records. Set rekey = true for this table to accept it (and remove it "
+            "once the change is logged)"
+        )
+    log.warning(f"{table}: rekeyed from {describe(*previous)} to {describe(*current)}")
+    return True
+
+
+# change log columns holding key values
+KEY_LIST_COLUMNS = (
+    "inserted_keys",
+    "deleted_keys",
+    "updated_keys",
+    "duplicate_keys_previous",
+    "duplicate_keys_current",
+)
+
+
+def _keys_as_strings(log_table):
+    string_keys = pyarrow.list_(pyarrow.string())
+    for name in KEY_LIST_COLUMNS:
+        i = log_table.schema.get_field_index(name)
+        if i >= 0:
+            log_table = log_table.set_column(i, name, log_table[name].cast(string_keys))
+    return log_table
+
+
+def append_change_log(change_log, row, schema, local_path):
+    """Write the change log (or None) with a row added, to local_path.
+
+    The log is uploaded by the caller (S3 has no append, so each change rewrites
+    the whole file). Key columns of a different type in earlier rows are widened
+    where possible (eg int32 to int64). Where they can't be (a rekey from an
+    integer primary key to a generated string key, or back), the key columns of
+    every row are converted to strings, so the history stays in one file. Each
+    row's key_column says what its keys are.
+    """
+    log_table = pyarrow.Table.from_pylist([row], schema=schema)
+    if change_log is not None:
+        try:
+            log_table = pyarrow.concat_tables([change_log, log_table], promote_options="permissive")
+        except (pyarrow.ArrowTypeError, pyarrow.ArrowInvalid):
+            log.warning("key type changed, change log keys converted to strings")
+            log_table = pyarrow.concat_tables(
+                [_keys_as_strings(change_log), _keys_as_strings(log_table)],
+                promote_options="permissive",
+            )
+    pq.write_table(log_table, local_path)
 
 
 def replicate_table(dest, table, fields, now, download=None, table_metadata=None):
@@ -554,29 +703,34 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
             entry["status"] = "unchanged"
             return entry
 
-        record = {
-            "table": table,
-            "timestamp": now.isoformat(timespec="seconds"),
-            "previous": _file_summary(previous_meta),
-            "current": _file_summary(new_meta),
-            "key": {
-                "column": keys.column,
-                "generated": bool(keys.hash_columns),
-                "hash_columns": keys.hash_columns,
-                "allow_duplicates": keys.allow_duplicates,
-            },
+        # before diffing: a changed key needs rekey
+        change_log = read_change_log(
+            dest, table, os.path.join(tmpdir, "change_log_previous.parquet")
+        )
+        rekeyed = check_key(table, keys, change_log, fields.get("rekey", False))
+
+        row = {
+            "_commit_timestamp": now,
+            "rekeyed": rekeyed,
+            "key_column": keys.column,
+            "key_generated": bool(keys.hash_columns),
+            "hash_columns": keys.hash_columns,
+            "allow_duplicates": keys.allow_duplicates,
             "bcdata_version": bcdata.__version__,
         }
+        for prefix, meta in (("previous", previous_meta), ("current", new_meta)):
+            for k in ("content_hash", "schema_hash", "feature_count", "downloaded"):
+                row[f"{prefix}_{k}"] = (meta or {}).get(k)
         changes = None
         if previous_meta is None:
             log.info(f"{table}: initial load ({new_meta['feature_count']} features)")
-            record["kind"] = "initial"
-            record["data_changed"] = True
+            row["kind"] = "initial"
+            row["data_changed"] = True
         else:
             previous_path = os.path.join(tmpdir, "previous.parquet")
             dest.download(previous_path, f"{table}.parquet")
-            record["kind"] = "changed"
-            record["schema_changes"] = schema_changes(previous_path, new_path)
+            row["kind"] = "changed"
+            columns = schema_changes(previous_path, new_path)
             summary, changes = diff_files(
                 previous_path,
                 new_path,
@@ -584,22 +738,39 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
                 timestamp=now,
                 records=fields.get("keep_change_records", False),
             )
-            record.update(summary)
-            if record["schema_changes"]["added"] or record["schema_changes"]["removed"]:
-                record["data_changed"] = True
-            log.info(f"{table}: changed {summary['counts']}")
+            row.update(summary)
+            row["columns_added"] = columns["added"]
+            row["columns_removed"] = columns["removed"]
+            row["columns_retyped"] = json.dumps(columns["retyped"]) if columns["retyped"] else None
+            if columns["added"] or columns["removed"]:
+                row["data_changed"] = True
+            counts = {k: summary[k] for k in ("inserted", "deleted", "updated", "duplicates")}
+            log.info(f"{table}: changed {counts}")
 
-        # record the change before uploading, so every uploaded file has a record
-        write_change_record(dest, table, timestamp, record, changes, tmpdir)
+        # write everything locally before uploading anything, so a failure doesn't
+        # leave a records file the log doesn't list. Then upload the records file,
+        # the log, and the mirror file last, so every uploaded mirror file has a
+        # change log row
+        records_local = None
+        if changes is not None:
+            row["records_file"] = f"changes/{table}/{timestamp}.parquet"
+            records_local = os.path.join(tmpdir, "records.parquet")
+            changes.to_parquet(records_local, index=False)
+        log_local = os.path.join(tmpdir, "change_log.parquet")
+        schema = change_log_schema(key_type(new_path, keys))
+        append_change_log(change_log, row, schema, log_local)
+        if records_local:
+            dest.upload(records_local, *row["records_file"].split("/"))
+        dest.upload(log_local, "changes", f"{table}.parquet")
         dest.upload(new_path, f"{table}.parquet")
-        entry["status"] = record["kind"]
-        entry["changed"] = record["timestamp"]
+        entry["status"] = row["kind"]
+        entry["changed"] = now.isoformat(timespec="seconds")
         return entry
 
 
 def run(dest, config, tables=None, force=False, now=None, download=None, table_metadata=None):
     """Replicate due tables, returning {table: error message} for tables that failed"""
-    # whole seconds, so the folder name, change.json and _commit_timestamp all match
+    # whole seconds, so the records file name and _commit_timestamp match
     now = (now or datetime.now(tz=UTC)).replace(microsecond=0)
     state = dest.read_json("state.json")
     selected = tables or sorted(config)

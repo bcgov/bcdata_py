@@ -11,8 +11,9 @@
 #   schedule      how often to check the table for changes:
 #                 daily | weekly | monthly | quarterly
 #   keep_change_records  true to keep the changed records (full rows) of each
-#                 change in changes.parquet. Default false: change.json still has
-#                 the counts and the keys of the inserted, deleted and updated records
+#                 change, in changes/<table>/<timestamp>.parquet. Default false: the
+#                 table's change log (changes/<table>.parquet) still has the counts
+#                 and the keys of the inserted, deleted and updated records
 #   hash_columns  for tables with no primary_key in table_metadata.toml: the columns
 #                 hashed (with fit_changedetector) to generate a key for change
 #                 detection. List the columns that identify a record, not descriptive
@@ -24,9 +25,18 @@
 #                 mirror file still has these columns.
 #   allow_duplicates  with hash_columns only: true to compare a table where some
 #                 records share hash_columns values (the first is compared, the rest
-#                 are counted and their keys listed in change.json). Default false:
+#                 are counted and their keys listed in the change log). Default false:
 #                 the table fails if its generated key is not unique. A duplicated
 #                 primary_key always fails the download.
+#   rekey         true to accept a change to the table's key (its primary_key in
+#                 table_metadata.toml, or its hash_columns) since its last change.
+#                 Without it, the table fails: keys logged before and after the
+#                 change don't refer to the same records (eg after hash_columns is
+#                 edited, every record is reported as deleted and inserted). If the
+#                 key type changes (integer id to generated hash, or back), the
+#                 change log's keys are all converted to strings. The key is checked
+#                 when a change is logged: remove rekey once the change log has a row
+#                 with the new key (until then, runs warn that it is still set).
 #
 # Every table needs either a primary_key in table_metadata.toml or hash_columns here.
 # All names must be lowercase.

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import geopandas as gpd
+import pyarrow
 import pyarrow.parquet as pq
 import pytest
 from shapely.geometry import Point
@@ -84,8 +85,13 @@ def run(dest, download, now=NOW, **kwargs):
 
 
 def changes(dest, table):
-    root = Path(dest.path("changes", table))
-    return [json.loads((d / "change.json").read_text()) for d in sorted(root.iterdir())]
+    """Rows of a table's change log"""
+    return pq.read_table(dest.path("changes", f"{table}.parquet")).to_pylist()
+
+
+def records(dest, record):
+    """The changed records file of a change log row"""
+    return gpd.read_parquet(dest.path(*record["records_file"].split("/")))
 
 
 # ---- configuration ----
@@ -106,6 +112,7 @@ def test_bundled_config_is_valid():
         ('["whse_test.hashed"]\nschedule = "weekly"\nhash_columns = ["A"]', "lowercase"),
         ('["whse_test.keyed"]\nschedule = "weekly"\nquery = "x"', "Unknown field"),
         ('["whse_test.keyed"]\nschedule = "weekly"\nkeep_change_records = "yes"', "true or false"),
+        ('["whse_test.keyed"]\nschedule = "weekly"\nrekey = 1', "true or false"),
         ('["WHSE_TEST.KEYED"]\nschedule = "weekly"', "lowercase"),
         (
             '["whse_test.keyed"]\nschedule = "weekly"\nallow_duplicates = true',
@@ -169,19 +176,18 @@ def test_initial_unchanged_changed(dest, download):
     record = changes(dest, TABLE)[-1]
     assert record["kind"] == "changed"
     assert record["data_changed"]
-    assert record["key"] == {
-        "column": "id",
-        "generated": False,
-        "hash_columns": None,
-        "allow_duplicates": False,
-    }
-    counts = record["counts"]
-    assert (counts["insert"], counts["delete"], counts["update"]) == (1, 1, 1)
-    assert counts["unchanged"] == 1
-    assert record["keys"] == {"insert": [4], "delete": [3], "update": [2]}
-    folder = max(Path(dest.path("changes", TABLE)).iterdir())
-    assert record["files"] == ["changes.parquet"]
-    rows = gpd.read_parquet(folder / "changes.parquet")
+    assert record["_commit_timestamp"] == later
+    assert (record["key_column"], record["key_generated"]) == ("id", False)
+    assert record["hash_columns"] is None
+    assert not record["allow_duplicates"]
+    assert (record["previous_feature_count"], record["current_feature_count"]) == (3, 3)
+    assert (record["inserted"], record["deleted"], record["updated"]) == (1, 1, 1)
+    assert record["unchanged"] == 1
+    assert record["inserted_keys"] == [4]
+    assert record["deleted_keys"] == [3]
+    assert record["updated_keys"] == [2]
+    assert record["records_file"] == f"changes/{TABLE}/20261208T060000Z.parquet"
+    rows = records(dest, record)
     assert list(rows.columns) == ["id", "name", "geometry", "_change_type", "_commit_timestamp"]
     # ordered by type, then key, preimage before postimage
     assert list(zip(rows["_change_type"], rows["id"], rows["name"])) == [
@@ -206,20 +212,23 @@ def test_generated_key(dest, download):
     )
     assert run(dest, download, now=NOW + timedelta(days=7), tables=[HASHED]) == {}
     record = changes(dest, HASHED)[-1]
-    assert record["key"]["generated"]
-    counts = record["counts"]
+    assert record["key_generated"]
+    assert record["key_column"] == replicate.HASH_KEY
+    assert record["hash_columns"] == ["name", "geometry"]
     # a unchanged (only its regenerated id differs), b->x and c moved: deleted + new
-    assert counts["unchanged"] == 1
-    assert (counts["insert"], counts["delete"]) == (2, 2)
+    assert record["unchanged"] == 1
+    assert (record["inserted"], record["deleted"]) == (2, 2)
     # the mirror file has no generated key
     assert replicate.HASH_KEY not in gpd.read_parquet(dest.path(f"{HASHED}.parquet")).columns
     # keep_change_records defaults to false: keys (hashes) recorded, but no changed records
-    assert [len(record["keys"][t]) for t in ("insert", "delete", "update")] == [2, 2, 0]
-    assert all(isinstance(k, str) for k in record["keys"]["insert"])
-    assert record["files"] == []
-    assert "duplicate" not in record["keys"]
-    folder = max(Path(dest.path("changes", HASHED)).iterdir())
-    assert not (folder / "changes.parquet").exists()
+    assert [len(record[f"{t}_keys"]) for t in ("inserted", "deleted", "updated")] == [2, 2, 0]
+    assert all(isinstance(k, str) for k in record["inserted_keys"])
+    assert record["records_file"] is None
+    assert not Path(dest.path("changes", HASHED)).exists()
+    assert record["duplicate_keys_previous"] is None
+    # the log has a row for each change, the initial load first
+    assert [r["kind"] for r in changes(dest, HASHED)] == ["initial", "changed"]
+    assert changes(dest, HASHED)[0]["inserted_keys"] is None
 
 
 def test_regenerated_id_not_ignored_by_default(dest, download):
@@ -232,7 +241,7 @@ def test_regenerated_id_not_ignored_by_default(dest, download):
         [11, 12], ["a", "b"], geoms=[Point(1000001, 1000000), Point(1000002, 1000000)]
     )
     replicate.run(dest, config, now=NOW + timedelta(days=7), **kwargs)
-    assert changes(dest, HASHED)[-1]["counts"]["update"] == 2
+    assert changes(dest, HASHED)[-1]["updated"] == 2
 
 
 def test_generated_key_null_geometry(dest, download):
@@ -241,7 +250,8 @@ def test_generated_key_null_geometry(dest, download):
     download.data[HASHED] = gdf([1, 2], ["a", "c"], geoms=[Point(1, 1), None])
     run(dest, download, now=NOW + timedelta(days=7), tables=[HASHED])
     record = changes(dest, HASHED)[-1]
-    assert record["dropped_null_geometry"] == {"previous": 1, "current": 1}
+    assert record["dropped_null_geometry_previous"] == 1
+    assert record["dropped_null_geometry_current"] == 1
 
 
 def test_int_float_flip(dest, download):
@@ -251,9 +261,10 @@ def test_int_float_flip(dest, download):
     download.data[TABLE] = gdf([1, 2], ["a", "b"], values=[1.0, 2.5])
     assert run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE]) == {}
     record = changes(dest, TABLE)[-1]
-    assert record["schema_changes"]["retyped"] == {"value": ["int64", "double"]}
-    assert record["counts"]["update"] == 1
-    assert record["counts"]["unchanged"] == 1
+    assert json.loads(record["columns_retyped"]) == {"value": ["int64", "double"]}
+    assert record["columns_added"] == record["columns_removed"] == []
+    assert record["updated"] == 1
+    assert record["unchanged"] == 1
 
 
 def test_failure_does_not_stop_other_tables(dest, download):
@@ -289,8 +300,7 @@ def test_modified_geometry_keeps_previous(dest, download):
     run(dest, download, tables=[TABLE])
     download.data[TABLE] = gdf([1], ["a"], geoms=[Point(2, 2)])
     run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])
-    folder = max(Path(dest.path("changes", TABLE)).iterdir())
-    rows = gpd.read_parquet(folder / "changes.parquet").set_index("_change_type")
+    rows = records(dest, changes(dest, TABLE)[-1]).set_index("_change_type")
     assert rows.loc["update_preimage", "geometry"] == Point(1, 1)
     assert rows.loc["update_postimage", "geometry"] == Point(2, 2)
 
@@ -305,21 +315,14 @@ def test_duplicates_allowed(dest, download):
     download.data[HASHED] = gdf([1, 2, 3], ["a", "a", "c"], geoms=[Point(1, 1)] * 3)
     assert replicate.run(dest, config, now=NOW + timedelta(days=7), **kwargs) == {}
     record = changes(dest, HASHED)[-1]
-    assert record["key"]["allow_duplicates"]
-    assert record["counts"] == {
-        "insert": 1,
-        "delete": 1,
-        "update": 0,
-        "unchanged": 1,
-        "duplicate": 2,
-    }
+    assert record["allow_duplicates"]
+    counts = ("inserted", "deleted", "updated", "unchanged", "duplicates")
+    assert [record[c] for c in counts] == [1, 1, 0, 1, 2]
     # each file's uncompared duplicate is listed by its key (the hash of "a")
-    duplicate = record["keys"]["duplicate"]
-    assert len(duplicate["previous"]) == len(duplicate["current"]) == 1
-    assert duplicate["previous"] == duplicate["current"]
+    assert len(record["duplicate_keys_previous"]) == len(record["duplicate_keys_current"]) == 1
+    assert record["duplicate_keys_previous"] == record["duplicate_keys_current"]
     # duplicates are counted, not written as changes
-    folder = max(Path(dest.path("changes", HASHED)).iterdir())
-    rows = gpd.read_parquet(folder / "changes.parquet")
+    rows = records(dest, record)
     assert sorted(rows["_change_type"]) == ["delete", "insert"]
 
 
@@ -331,6 +334,73 @@ def test_duplicates_not_allowed(dest, download):
     assert "DuplicateKeyError" in failures[HASHED]
     assert "allow_duplicates" in failures[HASHED]
     assert not dest.exists(f"{HASHED}.parquet")
+
+
+def test_key_type_change_keeps_log(dest, download):
+    # switching a table from its integer primary key to hash_columns: the earlier
+    # rows' keys are converted to strings, and the history stays in one log
+    download.data = {TABLE: gdf([1, 2], ["a", "b"])}
+    run(dest, download, tables=[TABLE])
+    download.data[TABLE] = gdf([1, 2], ["a", "c"])
+    run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])
+    assert changes(dest, TABLE)[-1]["updated_keys"] == [2]
+
+    config = {TABLE: {"schedule": "weekly", "hash_columns": ["name"], "rekey": True}}
+    kwargs = {"download": download, "table_metadata": {TABLE: {}}, "tables": [TABLE]}
+    download.data[TABLE] = gdf([1, 2], ["a", "d"])
+    assert replicate.run(dest, config, now=NOW + timedelta(days=14), **kwargs) == {}
+    rows = changes(dest, TABLE)
+    assert [r["key_column"] for r in rows] == ["id", "id", replicate.HASH_KEY]
+    assert [r["rekeyed"] for r in rows] == [False, False, True]
+    assert rows[1]["updated_keys"] == ["2"]
+    assert len(rows[2]["inserted_keys"]) == len(rows[2]["deleted_keys"]) == 1
+    assert pq.read_schema(dest.path("changes", f"{TABLE}.parquet")).field(
+        "updated_keys"
+    ).type == pyarrow.list_(pyarrow.string())
+
+
+def test_rekey(dest, download, caplog):
+    # editing hash_columns changes every generated key: refused without rekey
+    download.data = {HASHED: gdf([1, 2], ["a", "b"])}
+    run(dest, download, tables=[HASHED])
+    edited = {HASHED: {**CONFIG[HASHED], "hash_columns": ["name"]}}
+    kwargs = {"download": download, "table_metadata": TABLE_METADATA, "tables": [HASHED]}
+    download.data[HASHED] = gdf([1, 2], ["a", "c"])
+    failures = replicate.run(dest, edited, now=NOW + timedelta(days=7), **kwargs)
+    assert "RekeyError" in failures[HASHED]
+    assert "rekey = true" in failures[HASHED]
+    assert len(changes(dest, HASHED)) == 1
+    assert gpd.read_parquet(dest.path(f"{HASHED}.parquet"))["name"].tolist() == ["a", "b"]
+
+    # accepted with rekey: the diff uses the new key for both files
+    edited[HASHED]["rekey"] = True
+    assert replicate.run(dest, edited, now=NOW + timedelta(days=7), **kwargs) == {}
+    row = changes(dest, HASHED)[-1]
+    assert row["rekeyed"]
+    assert row["hash_columns"] == ["name"]
+    assert (row["inserted"], row["deleted"], row["unchanged"]) == (1, 1, 1)
+
+    # left set once the key is logged: a warning, not a rekey
+    download.data[HASHED] = gdf([1, 2], ["a", "d"])
+    assert replicate.run(dest, edited, now=NOW + timedelta(days=14), **kwargs) == {}
+    assert not changes(dest, HASHED)[-1]["rekeyed"]
+    assert "rekey is set but the key is unchanged" in caplog.text
+
+
+def test_failed_log_leaves_no_records_file(dest, download, monkeypatch):
+    download.data = {TABLE: gdf([1], ["a"])}
+    run(dest, download, tables=[TABLE])
+    download.data[TABLE] = gdf([1], ["b"])
+
+    def fail(*args):
+        raise OSError("log failed")
+
+    monkeypatch.setattr(replicate, "append_change_log", fail)
+    assert "log failed" in run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])[TABLE]
+    assert not Path(dest.path("changes", TABLE)).exists()
+    assert len(changes(dest, TABLE)) == 1
+    # the mirror is unchanged
+    assert gpd.read_parquet(dest.path(f"{TABLE}.parquet"))["name"].tolist() == ["a"]
 
 
 def test_hash_changed_data_unchanged(dest, download):
@@ -347,4 +417,4 @@ def test_hash_changed_data_unchanged(dest, download):
     record = changes(dest, TABLE)[-1]
     assert record["kind"] == "changed"
     assert not record["data_changed"]
-    assert record["files"] == []
+    assert record["records_file"] is None
