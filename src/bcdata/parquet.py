@@ -32,6 +32,11 @@ Geometries are hashed as the WKB shapely produces, so an upgrade that changed WK
 output would change every content_hash once.
 The "bcdata" metadata is added to the file footer once every row is written, so
 read it with pyarrow.parquet.read_metadata (not read_schema).
+
+It also describes the table, from the BC Data Catalogue record: the description,
+comments and column descriptions, and under "catalogue" the record's title, url,
+license (title and url), publisher and record_last_modified date. None of these
+affect the hashes, so a catalogue edit alone leaves content_hash unchanged.
 """
 
 import hashlib
@@ -346,7 +351,7 @@ def to_parquet(
         table_definition = bcdata.get_table_definition(table)
     except Exception as e:  # noqa: BLE001
         log.warning(f"Could not retrieve BCDC table definition for {table}: {e}")
-        table_definition = {"description": None, "comments": None, "schema": []}
+        table_definition = {"description": None, "comments": None, "schema": [], "catalogue": None}
     primary_key = bcdata.primary_keys.get(table.lower())
     primary_key = columns.names.get(primary_key.upper()) if primary_key else None
 
@@ -422,6 +427,9 @@ def to_parquet(
                 "description": table_definition.get("description"),
                 "comments": table_definition.get("comments"),
                 "columns": column_comments,
+                # the BC Data Catalogue record: title, url, license, publisher,
+                # record_last_modified
+                "catalogue": table_definition.get("catalogue"),
                 # source schemas only declare "number" - these columns were written as
                 # int64 because all of their values in this download are whole numbers
                 "integer_columns_inferred": [

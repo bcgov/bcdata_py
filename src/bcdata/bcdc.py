@@ -15,6 +15,7 @@ from bcdata.wfs import (
 log = logging.getLogger(__name__)
 
 BCDC_API_URL = "https://catalogue.data.gov.bc.ca/api/3/action/"
+BCDC_DATASET_URL = "https://catalogue.data.gov.bc.ca/dataset/"
 
 
 class ServiceException(Exception):
@@ -98,10 +99,26 @@ def _resource_matches(table_name, resource):
     )
 
 
+def _catalogue_record(package):
+    """Title, link, licence and publisher of a BCDC package (dataset record)"""
+    name = package.get("name")
+    return {
+        "title": package.get("title"),
+        "url": BCDC_DATASET_URL + name if name else None,
+        "license": {"title": package.get("license_title"), "url": package.get("license_url")},
+        "publisher": (package.get("organization") or {}).get("title"),
+        "record_last_modified": package.get("record_last_modified"),
+    }
+
+
 def get_table_definition(table_name):
     """
     Given a table/object name, search BCDC for the first package/resource with a matching "object_name",
-    returns dict: {"comments": <>, "notes": <>, "schema": {<schema dict>} }
+    returns dict: {"description": <>, "comments": <>, "schema": [<columns>], "primary_key": <>,
+    "catalogue": {"title", "url", "license": {"title", "url"}, "publisher",
+    "record_last_modified"}}
+
+    catalogue is None if no catalogue record matches the table.
     """
     # only allow searching for tables present in WFS list
     table_name = table_name.upper()
@@ -117,6 +134,7 @@ def get_table_definition(table_name):
         "comments": None,
         "schema": [],
         "primary_key": None,
+        "catalogue": None,
     }
 
     results = r.json()["result"]["results"]
@@ -140,9 +158,11 @@ def get_table_definition(table_name):
             table_definition["description"] = package["notes"]
             table_definition["schema"] = resource["details"]
             table_definition["comments"] = resource.get("object_table_comments")
+            table_definition["catalogue"] = _catalogue_record(package)
         elif len(results) == 1:
             # no schema found, but the description is unambiguous
             table_definition["description"] = results[0]["notes"]
+            table_definition["catalogue"] = _catalogue_record(results[0])
 
     if not table_definition["schema"]:
         log.warning(f"BC Data Catalouge API search provides no schema for: {table_name}")
