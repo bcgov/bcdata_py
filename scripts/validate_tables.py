@@ -1,8 +1,13 @@
-"""Validate the bundled table metadata (data/table_metadata.toml) against the live services.
+"""Validate the table metadata and replication config against the live services.
 
-Checks that every table exists in the WFS, that each primary_key and sort_key column
-is present in the WFS table schema, and that each bcdc_object_name lets the BC Data Catalogue
-search find the table's schema. Column values are not checked for uniqueness.
+data/table_metadata.toml (bundled with the package): checks that every table exists in
+the WFS, that each primary_key and sort_key column is present in the WFS table schema,
+and that each bcdc_object_name lets the BC Data Catalogue search find the table's
+schema. Column values are not checked for uniqueness.
+
+data/replication.toml (scripts/replicate.py): checks that the file is valid, that every
+table exists in the WFS, and that each hash_columns / ignore_columns column is
+present in the table.
 
     python scripts/validate_tables.py [--report report.md]
 
@@ -15,6 +20,8 @@ Exit codes:
 import argparse
 import logging
 import sys
+
+import replicate
 
 import bcdata
 
@@ -29,10 +36,17 @@ def find_problems():
     """Return a list of (table, problem description) for invalid table metadata"""
     WFS = bcdata.wfs.BCWFS()
     available = {t.lower() for t in WFS.list_tables()}
-    # check key columns against the WFS schema, which is what paged requests use.
-    # _get_schemas describes many tables per request, rather than one request per table
-    schemas = WFS._get_schemas(sorted(t.upper() for t in bcdata.table_metadata if t in available))
     problems = []
+    try:
+        replication = replicate.load_config()
+    except replicate.ConfigError as e:
+        problems.append(("data/replication.toml", str(e)))
+        replication = {}
+    # check columns against the WFS schema, which is what paged requests use.
+    # _get_schemas describes many tables per request, rather than one request per table
+    schemas = WFS._get_schemas(
+        sorted({t.upper() for t in [*bcdata.table_metadata, *replication] if t in available})
+    )
     for table, fields in sorted(bcdata.table_metadata.items()):
         if table not in available:
             problems.append((table, "table not available via WFS"))
@@ -48,6 +62,19 @@ def find_problems():
                     f"no catalogue schema found via bcdc_object_name `{fields['bcdc_object_name']}`",
                 )
             )
+    for table, fields in sorted(replication.items()):
+        if table not in available:
+            problems.append((table, "replication.toml: table not available via WFS"))
+            continue
+        # mirror files have lowercase column names, and a "geometry" column
+        columns = {c.lower() for c in schemas[table.upper()]["properties"]}
+        columns.add(replicate.GEOMETRY_COLUMN)
+        for name in ("hash_columns", "ignore_columns"):
+            for column in fields.get(name, []):
+                if column not in columns:
+                    problems.append(
+                        (table, f"replication.toml: {name} `{column}` not found in table")
+                    )
     return problems
 
 
@@ -56,7 +83,7 @@ def write_report(problems, path):
     lines = [
         (
             f"`scripts/validate_tables.py` found {len(problems)} problem(s) in "
-            "`data/table_metadata.toml`:"
+            "`data/table_metadata.toml` / `data/replication.toml`:"
         ),
         "",
         "| Table | Problem |",
@@ -66,7 +93,8 @@ def write_report(problems, path):
     lines += [
         "",
         (
-            "Update or remove the affected entries in `data/table_metadata.toml`, then confirm "
+            "Update or remove the affected entries in `data/table_metadata.toml` or "
+            "`data/replication.toml`, then confirm "
             "with `python scripts/validate_tables.py`. This issue is closed automatically when "
             "validation passes."
         ),
@@ -91,7 +119,10 @@ def main():
             write_report(problems, args.report)
         log.error(f"{len(problems)} problem(s) found in table metadata")
         sys.exit(EXIT_PROBLEMS_FOUND)
-    log.info(f"Validated metadata for {len(bcdata.table_metadata)} tables")
+    log.info(
+        f"Validated metadata for {len(bcdata.table_metadata)} tables, "
+        f"replication config for {len(replicate.load_config())} tables"
+    )
 
 
 if __name__ == "__main__":

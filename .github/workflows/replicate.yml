@@ -1,0 +1,146 @@
+name: Replicate tables
+
+# Replicate the tables in data/replication.toml to the GeoParquet mirror with
+# scripts/replicate.py. Each run checks only the tables that are due (per their
+# schedule in replication.toml and the mirror's state.json), so the workflow can run
+# daily whatever the tables' schedules.
+#
+# DRAFT: the schedule is commented out until a manual run has been checked. Before
+# the first run, set in the repository settings:
+#
+# - variable BCDATA_REPLICATION_DEST: the destination, eg s3://bucket/prefix
+# - variable AWS_ENDPOINT_URL: the S3 endpoint (leave unset for AWS)
+# - secrets NRS_OBJECTSTORE_ACCESS_KEY_ID and NRS_OBJECTSTORE_SECRET_ACCESS_KEY:
+#   credentials with write access to the destination
+#
+# Manual runs can check named tables, and check tables that aren't due (force).
+#
+# Tables that fail (after bcdata's retries of each request) are tried again by the
+# retry job, on a new runner: a refusal lasting that long probably means DataBC is
+# blocking the first runner's IP (#264). The run fails only if a table fails again
+# there. Compare the two jobs' "Runner IP" logs to check whether blocks follow IPs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tables:
+        description: Comma separated tables to check (default all)
+        required: false
+        type: string
+      force:
+        description: Check tables even if they aren't due
+        required: false
+        type: boolean
+        default: false
+  # schedule:
+  #   - cron: '17 9 * * *'  # daily 09:17 UTC
+
+permissions:
+  contents: read
+
+# runs must not overlap: two runs changing the same table would each drop the
+# other's change log row (see scripts/replicate.py). A run started while another is
+# in progress waits for it
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  replicate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    outputs:
+      failed: ${{ steps.replicate.outputs.failed }}
+    env:
+      BCDATA_REPLICATION_DEST: ${{ vars.BCDATA_REPLICATION_DEST }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.NRS_OBJECTSTORE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.NRS_OBJECTSTORE_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL: ${{ vars.AWS_ENDPOINT_URL }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0  # setuptools_scm needs full history/tags to derive the version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: '3.13'
+
+      # --locked: replicate with the dependency versions in uv.lock (generated keys
+      # depend on how fit_changedetector and pandas format values)
+      - name: Install dependencies
+        run: uv sync --locked --group replicate
+
+      # record the runner's IP, to check whether refused connections follow runner
+      # IPs (#264)
+      - name: Runner IP
+        run: |
+          echo "runner IP: $(curl -sS --max-time 20 https://api.ipify.org 2>/dev/null || echo unknown)"
+
+      # inputs are passed through the environment, not into the script text.
+      # Failed tables are passed to the retry job rather than failing this job; any
+      # other error (eg an invalid config, an unreachable destination) fails it
+      - name: Replicate
+        id: replicate
+        env:
+          TABLES: ${{ inputs.tables }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          # an unset repository variable is an empty string, which obstore doesn't
+          # treat as unset (an empty endpoint fails every request)
+          if [ -z "$AWS_ENDPOINT_URL" ]; then unset AWS_ENDPOINT_URL; fi
+          args=(--report report.md --failed-tables failed.txt)
+          if [ -n "$TABLES" ]; then args+=(--tables "$TABLES"); fi
+          if [ "$FORCE" = "true" ]; then args+=(--force); fi
+          status=0
+          uv run python scripts/replicate.py "${args[@]}" || status=$?
+          if [ "$status" -eq 1 ] && [ -s failed.txt ]; then
+            echo "failed=$(cat failed.txt)" >> "$GITHUB_OUTPUT"
+            { cat report.md; echo; echo "Retrying these tables on a new runner."; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit "$status"
+
+  retry:
+    needs: replicate
+    if: needs.replicate.outputs.failed != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      BCDATA_REPLICATION_DEST: ${{ vars.BCDATA_REPLICATION_DEST }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.NRS_OBJECTSTORE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.NRS_OBJECTSTORE_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT_URL: ${{ vars.AWS_ENDPOINT_URL }}
+    steps:
+      # give a block on DataBC's side time to clear
+      - name: Wait
+        run: sleep 300
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: uv sync --locked --group replicate
+
+      - name: Runner IP
+        run: |
+          echo "runner IP: $(curl -sS --max-time 20 https://api.ipify.org 2>/dev/null || echo unknown)"
+
+      # --force: retry the failed tables whether or not they were due (a manual run
+      # with force may have checked tables that weren't)
+      - name: Replicate failed tables
+        env:
+          TABLES: ${{ needs.replicate.outputs.failed }}
+        run: |
+          if [ -z "$AWS_ENDPOINT_URL" ]; then unset AWS_ENDPOINT_URL; fi
+          uv run python scripts/replicate.py --report report.md --tables "$TABLES" --force
+
+      - name: Report failed tables
+        if: failure() && hashFiles('report.md') != ''
+        run: cat report.md >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,136 @@
+# Tables replicated to the GeoParquet mirror by scripts/replicate.py.
+#
+# Each entry is a table name in quotes and brackets. The whole table is replicated
+# (no attribute or bbox filters) to <destination>/<table>/<table>.parquet.
+#
+#   ["whse_fish.pscis_assessment_svw"]
+#   schedule = "weekly"
+#
+#   VALUES:
+#
+#   schedule      how often to check the table for changes:
+#                 daily | weekly | monthly | quarterly
+#   keep_change_records  true to keep the changed records (full rows) of each
+#                 change, in <table>/changes/<timestamp>.parquet. Default false: the
+#                 table's change log (<table>/changes.parquet) still has the counts
+#                 and the keys of the inserted, deleted and updated records
+#   hash_columns  for tables with no primary_key in table_metadata.toml: the columns
+#                 hashed (with fit_changedetector) to generate a key for change
+#                 detection. List the columns that identify a record, not descriptive
+#                 ones, and never a regenerated id. Include "geometry" to hash the
+#                 geometry. Not allowed for tables that have a primary_key.
+#   ignore_columns  columns left out of the comparison, eg an id regenerated on every
+#                 refresh (otherwise every record would be reported as modified).
+#                 Not the primary key, the geometry, or a hash_columns column. The
+#                 mirror file still has these columns.
+#   allow_duplicates  with hash_columns only: true to compare a table where some
+#                 records share hash_columns values (the first is compared, the rest
+#                 are counted and their keys listed in the change log). Default false:
+#                 the table fails if its generated key is not unique. A duplicated
+#                 primary_key always fails the download.
+#   rekey         true to accept a change to the table's key (its primary_key in
+#                 table_metadata.toml, or its hash_columns) since its last change.
+#                 Without it, the table fails: keys logged before and after the
+#                 change don't refer to the same records (eg after hash_columns is
+#                 edited, every record is reported as deleted and inserted). If the
+#                 key type changes (integer id to generated hash, or back), the
+#                 change log's keys are all converted to strings. The key is checked
+#                 when a change is logged: remove rekey once the change log has a row
+#                 with the new key (until then, runs warn that it is still set).
+#
+# Every table needs either a primary_key in table_metadata.toml or hash_columns here.
+# All names must be lowercase.
+# After editing, validate against the live services:  python scripts/validate_tables.py
+
+# ---- weekly ----
+
+["whse_fish.fiss_fish_obsrvtn_pnt_sp"]
+schedule = "weekly"
+# fish_observation_point_id (and objectid, which fit_changedetector always ignores)
+# are regenerated on refresh. hash_columns are the columns bcfishobs uses for its
+# observation_key (smnorris/bcfishobs sql/process.sql). The UTM columns stand in for
+# the geometry, which is derived from them, so records without geometry are still
+# compared
+ignore_columns = ["fish_observation_point_id"]
+# on 2026-11-24, 25 records repeated another record's hash_columns values. They are
+# identical apart from the regenerated ids (bcfishobs drops them)
+allow_duplicates = true
+hash_columns = [
+    "source",
+    "species_code",
+    "observation_date",
+    "utm_zone",
+    "utm_easting",
+    "utm_northing",
+    "life_stage_code",
+    "activity_code",
+]
+
+["whse_fish.pscis_assessment_svw"]
+schedule = "weekly"
+
+["whse_fish.pscis_design_proposal_svw"]
+schedule = "weekly"
+
+["whse_fish.pscis_habitat_confirmation_svw"]
+schedule = "weekly"
+
+["whse_fish.pscis_remediation_svw"]
+schedule = "weekly"
+
+# ---- monthly ----
+
+["whse_admin_boundaries.clab_indian_reserves"]
+schedule = "monthly"
+
+["whse_admin_boundaries.clab_national_parks"]
+schedule = "monthly"
+
+["whse_basemapping.gba_local_reg_greenspaces_sp"]
+schedule = "monthly"
+
+["whse_basemapping.gba_railway_structure_lines_sp"]
+schedule = "monthly"
+
+["whse_basemapping.gba_railway_tracks_sp"]
+schedule = "monthly"
+
+["whse_basemapping.gba_transmission_lines_sp"]
+schedule = "monthly"
+
+["whse_basemapping.gns_geographical_names_sp"]
+schedule = "monthly"
+
+["whse_fish.fiss_stream_sample_sites_sp"]
+schedule = "monthly"
+
+["whse_forest_tenure.ften_range_poly_svw"]
+schedule = "monthly"
+
+["whse_forest_tenure.ften_road_section_lines_svw"]
+schedule = "monthly"
+# a road section within a forest tenure file - a natural composite key, hashed
+# without geometry so that geometry edits are reported as modifications.
+# forest_file_id + road_section_id alone is not unique: on 2026-11-24, 558 sections
+# each had an ACTIVE and a PENDING record, so life_cycle_status_code is included
+# (unique across all 287,122 records). A section going from PENDING to ACTIVE is
+# then reported as deleted + new. Stability is unchecked
+hash_columns = ["forest_file_id", "road_section_id", "life_cycle_status_code"]
+
+["whse_imagery_and_base_maps.mot_road_structure_sp"]
+schedule = "monthly"
+
+["whse_legal_admin_boundaries.abms_municipalities_sp"]
+schedule = "monthly"
+
+["whse_mineral_tenure.og_petrlm_dev_rds_pre06_pub_sp"]
+schedule = "monthly"
+
+["whse_mineral_tenure.og_road_segment_permit_sp"]
+schedule = "monthly"
+
+["whse_tantalis.ta_conservancy_areas_svw"]
+schedule = "monthly"
+
+["whse_tantalis.ta_park_ecores_pa_svw"]
+schedule = "monthly"

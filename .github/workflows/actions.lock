@@ -10,6 +10,9 @@ workflows:
         - 'astral-sh/setup-uv@v10.3.3'
         - 'pypa/gh-action-pypi-publish@release/v1'
         - 'sigstore/gh-action-sigstore-python@v3.5.0'
+    '.github/workflows/replicate.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'astral-sh/setup-uv@v10.3.3'
     '.github/workflows/tests.yml':
         - 'actions/checkout@v7.0.1'
         - 'astral-sh/setup-uv@v10.3.3'
