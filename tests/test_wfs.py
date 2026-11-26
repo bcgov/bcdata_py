@@ -475,9 +475,8 @@ def test_request_schemas_missing_table():
             WFS._request_schemas(["A.POINTS", "C.OTHER"])
 
 
-def test_get_schemas_batches_requests(tmp_path, monkeypatch):
-    WFS = _wfs_without_network()
-    WFS.cache_path, WFS.refresh, WFS.cache_refresh_days = str(tmp_path), False, 30
+def _fake_schema_requests(WFS, monkeypatch):
+    """Replace schema requests on WFS with fakes, returning the list of batches requested"""
     batches = []
 
     def fake_request_schemas(tables):
@@ -485,13 +484,42 @@ def test_get_schemas_batches_requests(tmp_path, monkeypatch):
         return {t: {"properties": {}} for t in tables}
 
     monkeypatch.setattr(WFS, "_request_schemas", fake_request_schemas)
+    # start from an empty in-process schema cache, and leave the real one untouched
+    monkeypatch.setattr(bcdata.wfs, "_schemas", {})
+    return batches
+
+
+def test_get_schemas_batches_requests(tmp_path, monkeypatch):
+    WFS = _wfs_without_network()
+    WFS.cache_path, WFS.refresh = str(tmp_path), False
+    batches = _fake_schema_requests(WFS, monkeypatch)
     monkeypatch.setattr(bcdata.wfs, "SCHEMAS_PER_REQUEST", 2)
-    tables = ["A.ONE", "A.TWO", "A.THREE"]
-    assert set(WFS._get_schemas(tables)) == set(tables)
+    tables = ["A.ONE", "A.TWO", "A.THREE", "A.ONE"]
+    assert set(WFS._get_schemas(tables)) == {"A.ONE", "A.TWO", "A.THREE"}
     assert batches == [["A.ONE", "A.TWO"], ["A.THREE"]]
-    # cached schemas are not requested again
+    # schemas already requested by this process are not requested again,
+    # including by another BCWFS instance
     WFS._get_schemas(tables)
+    other = _wfs_without_network()
+    other.refresh = False
+    monkeypatch.setattr(other, "_request_schemas", WFS._request_schemas)
+    other.get_schema("A.TWO")
     assert len(batches) == 2
+    # and schemas are not written to the cache folder
+    assert list(tmp_path.iterdir()) == []
+    # changing a returned schema does not change the cached one
+    WFS.get_schema("A.ONE")["properties"]["X"] = "string"
+    assert WFS.get_schema("A.ONE") == {"properties": {}}
+
+
+def test_get_schemas_refresh(tmp_path, monkeypatch):
+    WFS = _wfs_without_network()
+    WFS.cache_path, WFS.refresh = str(tmp_path), False
+    batches = _fake_schema_requests(WFS, monkeypatch)
+    WFS.get_schema("A.ONE")
+    WFS.refresh = True
+    WFS.get_schema("A.ONE")
+    assert batches == [["A.ONE"], ["A.ONE"]]
 
 
 def test_request_schemas_untyped_column():
@@ -557,3 +585,26 @@ def test_typed_gdf(monkeypatch):
     }
     assert gdf["surveyed"].tolist() == [date(2025, 8, 20), None]
     assert gdf.crs == "EPSG:3005"
+
+
+def test_capabilities_cache_is_utf8(tmp_path, monkeypatch):
+    WFS = _wfs_without_network()
+    WFS.cache_path, WFS.refresh, WFS.cache_refresh_days = str(tmp_path), False, 30
+    requests_made = []
+    xml = '<?xml version="1.0" encoding="UTF-8"?><Capabilities title="Gwáwaenuk – Tables"/>'
+
+    def fake_request_capabilities():
+        requests_made.append(1)
+        return xml
+
+    monkeypatch.setattr(WFS, "_request_capabilities", fake_request_capabilities)
+    cache_file = tmp_path / "capabilities.xml"
+    # a cache written by an earlier bcdata in the platform encoding (cp1252 on Windows)
+    cache_file.write_bytes(xml.encode("cp1252"))
+    assert WFS.get_capabilities() == xml
+    assert len(requests_made) == 1
+    # requested again, and cached as utf-8
+    assert cache_file.read_bytes() == xml.encode("utf-8")
+    # which is then read without a request
+    assert WFS.get_capabilities() == xml
+    assert len(requests_made) == 1
