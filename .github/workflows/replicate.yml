@@ -9,8 +9,7 @@ name: Replicate tables
 # the first run, set in the repository settings:
 #
 # - variable BCDATA_REPLICATION_DEST: the destination, eg s3://bucket/prefix
-# - variables AWS_ENDPOINT_URL and AWS_REGION: the S3 endpoint and region (leave
-#   AWS_ENDPOINT_URL unset for AWS)
+# - variable AWS_ENDPOINT_URL: the S3 endpoint (leave unset for AWS)
 # - secrets NRS_OBJECTSTORE_ACCESS_KEY_ID and NRS_OBJECTSTORE_SECRET_ACCESS_KEY:
 #   credentials with write access to the destination
 #
@@ -50,7 +49,6 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.NRS_OBJECTSTORE_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.NRS_OBJECTSTORE_SECRET_ACCESS_KEY }}
       AWS_ENDPOINT_URL: ${{ vars.AWS_ENDPOINT_URL }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -80,9 +78,7 @@ jobs:
         run: |
           # an unset repository variable is an empty string, which obstore doesn't
           # treat as unset (an empty endpoint fails every request)
-          for name in AWS_ENDPOINT_URL AWS_REGION; do
-            if [ -z "${!name}" ]; then unset "$name"; fi
-          done
+          if [ -z "$AWS_ENDPOINT_URL" ]; then unset AWS_ENDPOINT_URL; fi
           args=(--report report.md)
           if [ -n "$TABLES" ]; then args+=(--tables "$TABLES"); fi
           if [ "$FORCE" = "true" ]; then args+=(--force); fi
