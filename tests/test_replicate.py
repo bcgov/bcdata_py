@@ -305,6 +305,28 @@ def test_int_float_flip(dest, download):
     assert record["unchanged"] == 1
 
 
+@pytest.mark.parametrize("hash_columns", [["value"], ["name", "value"], ["id", "value"]])
+def test_generated_key_ignores_inferred_type(dest, download, hash_columns):
+    # bcdata infers int64 or double per download: a whole number hashes the same
+    config = {HASHED: {"schedule": "weekly", "hash_columns": hash_columns}}
+    kwargs = {"download": download, "table_metadata": TABLE_METADATA, "tables": [HASHED]}
+    # the first diff compares two int64 files, so 3 is logged with the key of an
+    # integer column
+    download.data = {HASHED: gdf([1, 2], ["a", "b"], values=[1, 2])}
+    replicate.run(dest, config, now=NOW, **kwargs)
+    download.data[HASHED] = gdf([1, 2], ["a", "b"], values=[1, 3])
+    replicate.run(dest, config, now=NOW + timedelta(days=7), **kwargs)
+    first = changes(dest, HASHED)[-1]
+    assert (first["inserted"], first["deleted"], first["unchanged"]) == (1, 1, 1)
+    # then int64 to double: 1 still matches 1.0, and 3 is deleted under the key it
+    # was inserted with
+    download.data[HASHED] = gdf([1, 2], ["a", "b"], values=[1.0, 2.5])
+    replicate.run(dest, config, now=NOW + timedelta(days=14), **kwargs)
+    second = changes(dest, HASHED)[-1]
+    assert (second["inserted"], second["deleted"], second["unchanged"]) == (1, 1, 1)
+    assert second["deleted_keys"] == first["inserted_keys"]
+
+
 def test_failure_does_not_stop_other_tables(dest, download):
     download.data = {HASHED: gdf([1], ["a"])}  # no data for TABLE: its download fails
     failures = run(dest, download)

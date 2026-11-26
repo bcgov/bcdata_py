@@ -445,6 +445,25 @@ def count_duplicates(path, hash_columns):
         ).fetchall()[0][0]
 
 
+def _hash_text(series):
+    """A numeric column as text for hashing, the same whatever type bcdata inferred.
+
+    fit_changedetector hashes str() of each value, after pandas has converted the
+    row to a common type, so int64 1 and double 1.0 would hash differently, and an
+    integer could hash as "1.0" next to a double. Whole numbers are written as
+    integers ("1"), others as Python writes floats ("2.5").
+    """
+    if pandas.api.types.is_bool_dtype(series):
+        return series.astype("string")
+    if pandas.api.types.is_integer_dtype(series):
+        return series.astype("Int64").astype("string")
+    values = series.astype("Float64")
+    whole = ((values == values.round()) & (values.abs() < 1e18)).fillna(False)
+    text = values.astype("string")
+    text[whole] = values[whole].astype("Int64").astype("string")
+    return text
+
+
 def add_key(fcd, df, hash_columns, allow_duplicates):
     """Add the generated key column, returning (df, number of records dropped)"""
     missing = [c for c in hash_columns if c not in df.columns]
@@ -452,16 +471,24 @@ def add_key(fcd, df, hash_columns, allow_duplicates):
         raise ValueError(f"hash_columns not present in data: {missing}")
     hash_geometry = GEOMETRY_COLUMN in hash_columns
     n_dropped = int(df.geometry.isna().sum()) if hash_geometry else 0
+    # numeric columns are hashed as text copies (see _hash_text), so the compared
+    # and written columns keep their types
+    numeric = {
+        c: f"_bcdata_hash_{c}"
+        for c in hash_columns
+        if c != GEOMETRY_COLUMN and pandas.api.types.is_numeric_dtype(df[c])
+    }
+    df = df.assign(**{copy: _hash_text(df[c]) for c, copy in numeric.items()})
     df = fcd.add_hash_key(
         df,
         HASH_KEY,
-        hash_columns,
+        [numeric.get(c, c) for c in hash_columns],
         # fcd can't hash a missing geometry: drop (and count) those records.
         # See bcgov/FIT_changedetector#141
         drop_null_geometry=True if hash_geometry else None,
         allow_duplicates=allow_duplicates,
     )
-    return df, n_dropped
+    return df.drop(columns=list(numeric.values())), n_dropped
 
 
 # _change_type values, following the Delta Lake change data feed convention. The
