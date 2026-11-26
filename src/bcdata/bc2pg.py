@@ -1,6 +1,7 @@
 import logging
 
 import numpy
+from psycopg import sql
 from shapely.geometry.linestring import LineString
 from shapely.geometry.multilinestring import MultiLineString
 from shapely.geometry.multipoint import MultiPoint
@@ -26,6 +27,24 @@ SUPPORTED_TYPES = [
     "POLYGON",
     "MULTIPOLYGON",
 ]
+
+
+def _copy_insert(table, conn, keys, data_iter):
+    """pandas.to_sql insert method that loads rows with COPY.
+
+    Matches how geopandas.to_postgis loads rows, so postgres parses text values
+    (e.g. dates) into the column types. A plain to_sql insert under psycopg 3
+    casts object columns to VARCHAR and fails on DATE columns.
+    """
+    target = (
+        sql.Identifier(table.schema, table.name) if table.schema else sql.Identifier(table.name)
+    )
+    copy_sql = sql.SQL("COPY {} ({}) FROM STDIN").format(
+        target, sql.SQL(", ").join(sql.Identifier(k) for k in keys)
+    )
+    with conn.connection.cursor() as cur, cur.copy(copy_sql) as copy:
+        for row in data_iter:
+            copy.write_row(row)
 
 
 def bc2pg(
@@ -193,6 +212,7 @@ def bc2pg(
                 if_exists="append",
                 schema=schema_name,
                 index=False,
+                method=_copy_insert,
             )
             df = None
 
