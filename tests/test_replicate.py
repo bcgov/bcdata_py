@@ -336,6 +336,13 @@ def test_failure_does_not_stop_other_tables(dest, download):
     assert TABLE not in state
 
 
+def test_failed_tables_file(tmp_path):
+    # read back by the workflow's retry job as its --tables
+    path = tmp_path / "failed.txt"
+    replicate.write_failed_tables({TABLE: "error", HASHED: "error"}, path)
+    assert path.read_text() == f"{HASHED},{TABLE}\n"
+
+
 def test_download_check_error_retried(dest, download):
     calls = []
 

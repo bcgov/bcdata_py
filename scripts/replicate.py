@@ -51,7 +51,8 @@ without a primary key (hash_columns) exist only in the diff and the change recor
 
 Exit codes:
     0  every due table was checked
-    1  one or more tables failed (listed in the log, and in --report if given)
+    1  one or more tables failed (listed in the log, and in --report and
+       --failed-tables if given)
 """
 
 import argparse
@@ -947,6 +948,11 @@ def write_report(failures, path):
     Path(path).write_text("\n".join(lines) + "\n")
 
 
+def write_failed_tables(failures, path):
+    """Write the failed tables' names, comma separated (as --tables takes them)"""
+    Path(path).write_text(",".join(sorted(failures)) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -957,6 +963,10 @@ def main():
     parser.add_argument("--tables", help="comma separated tables to check (default: all)")
     parser.add_argument("--force", action="store_true", help="check tables even if not due")
     parser.add_argument("--report", help="write failures to this markdown file")
+    parser.add_argument(
+        "--failed-tables",
+        help="write the failed tables to this file, comma separated (for --tables)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(
@@ -972,6 +982,8 @@ def main():
             log.error(f"{table}: {error}")
         if args.report:
             write_report(failures, args.report)
+        if args.failed_tables:
+            write_failed_tables(failures, args.failed_tables)
         sys.exit(1)
 
 
