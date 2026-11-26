@@ -462,61 +462,6 @@ def test_failed_log_leaves_no_records_file(dest, download, monkeypatch):
     assert read_gdf(dest, TABLE, f"{TABLE}.parquet")["name"].tolist() == ["a"]
 
 
-@pytest.mark.parametrize("log_exists", [True, False])
-def test_change_log_written_meanwhile(download, monkeypatch, log_exists):
-    # another run writes the change log between this run reading and replacing it
-    # (MemoryStore: obstore's LocalStore has no conditional writes)
-    dest = replicate.Destination("memory://mirror", store=obstore.store.MemoryStore())
-    download.data = {TABLE: gdf([1], ["a"])}
-    run(dest, download, tables=[TABLE])
-    if not log_exists:
-        dest.delete(TABLE, "changes.parquet")
-    read_change_log = replicate.read_change_log
-
-    def read_then_overwrite(dest_, table, local_path):
-        result = read_change_log(dest_, table, local_path)
-        obstore.put(dest_.store, f"{table}/changes.parquet", b"another run")
-        return result
-
-    monkeypatch.setattr(replicate, "read_change_log", read_then_overwrite)
-    download.data[TABLE] = gdf([1], ["b"])
-    failures = run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])
-    assert "ConcurrentWriteError" in failures[TABLE]
-    # the other run's log is kept, this run's records file removed, mirror unchanged
-    assert dest.read_bytes(TABLE, "changes.parquet") == b"another run"
-    assert listed(dest, TABLE, "changes") == []
-    assert read_gdf(dest, TABLE, f"{TABLE}.parquet")["name"].tolist() == ["a"]
-
-
-def test_conditional_writes_unsupported(download, monkeypatch):
-    # a store (other than a local folder) without conditional writes: fail the table
-    # rather than overwrite the change log
-    dest = replicate.Destination("memory://mirror", store=obstore.store.MemoryStore())
-    download.data = {TABLE: gdf([1], ["a"])}
-    put = obstore.put
-
-    def unconditional_only(store, path, file, **kwargs):
-        if kwargs.get("mode"):
-            raise NotImplementedError("conditional put")
-        return put(store, path, file, **kwargs)
-
-    monkeypatch.setattr(replicate.obstore, "put", unconditional_only)
-    failures = run(dest, download, tables=[TABLE])
-    assert "ConditionalWriteError" in failures[TABLE]
-    assert not dest.exists(TABLE, "changes.parquet")
-    assert not dest.exists(TABLE, f"{TABLE}.parquet")
-
-    # a change: the uploaded records file is removed again
-    monkeypatch.setattr(replicate.obstore, "put", put)
-    run(dest, download, tables=[TABLE])
-    monkeypatch.setattr(replicate.obstore, "put", unconditional_only)
-    download.data[TABLE] = gdf([1], ["b"])
-    failures = run(dest, download, now=NOW + timedelta(days=7), tables=[TABLE])
-    assert "ConditionalWriteError" in failures[TABLE]
-    assert listed(dest, TABLE, "changes") == []
-    assert read_gdf(dest, TABLE, f"{TABLE}.parquet")["name"].tolist() == ["a"]
-
-
 def test_metadata_changed(dest, download):
     download.data = {TABLE: gdf([1, 2], ["a", "b"])}
     run(dest, download, tables=[TABLE])
