@@ -217,3 +217,28 @@ def test_bc2pg_append_to_other():
     r = DB_CONNECTION.query("select * from whse_imagery_and_base_maps.arpt")
     assert len(r) == 2
     DB_CONNECTION.execute("drop table whse_imagery_and_base_maps.arpt")
+
+
+def test_bc2pg_copy_insert_date():
+    # rows without geometry are loaded with to_sql; text dates must load into DATE columns
+    # (a plain to_sql insert under psycopg 3 casts them to VARCHAR and fails)
+    import pandas
+
+    from bcdata.bc2pg import _copy_insert
+
+    DB_CONNECTION.execute("drop table if exists public.bcdata_copy_test")
+    DB_CONNECTION.execute("create table public.bcdata_copy_test (id numeric, d date, v varchar)")
+    df = pandas.DataFrame({"id": [1.0, None], "d": ["2026-01-02", None], "v": ["a", None]})
+    try:
+        df.to_sql(
+            "bcdata_copy_test",
+            DB_CONNECTION.engine,
+            if_exists="append",
+            schema="public",
+            index=False,
+            method=_copy_insert,
+        )
+        r = DB_CONNECTION.query("select id, d::text, v from public.bcdata_copy_test order by id")
+    finally:
+        DB_CONNECTION.execute("drop table public.bcdata_copy_test")
+    assert [tuple(row) for row in r] == [(1, "2026-01-02", "a"), (None, None, None)]
