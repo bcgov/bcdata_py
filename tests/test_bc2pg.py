@@ -4,6 +4,7 @@ import pytest
 from psycopg import errors as pg_errors
 
 import bcdata
+from bcdata.bc2pg import _log_deprecation
 from bcdata.database import Database
 
 DB_URL = os.environ.get("BCDATA_TEST_DATABASE_URL")
@@ -217,3 +218,18 @@ def test_bc2pg_append_to_other():
     r = DB_CONNECTION.query("select * from whse_imagery_and_base_maps.arpt")
     assert len(r) == 2
     DB_CONNECTION.execute("drop table whse_imagery_and_base_maps.arpt")
+
+
+def test_bc2pg_deprecated(caplog):
+    # the notice is logged (visible even though bcdata suppresses python warnings)
+    # and raised as a DeprecationWarning, before anything else is done.
+    # It is logged once per process, so reset that (earlier tests call bc2pg)
+    _log_deprecation.cache_clear()
+    for _ in range(2):
+        with (
+            pytest.warns(DeprecationWarning, match="bc2pg is deprecated"),
+            pytest.raises(ValueError, match="not compatible"),
+        ):
+            bcdata.bc2pg(AIRPORTS_TABLE, DB_URL, schema_only=True, append=True)
+    assert caplog.text.count("bc2pg is deprecated") == 1
+    assert "issues/270" in caplog.text

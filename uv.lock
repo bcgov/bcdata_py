@@ -38,7 +38,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "click" },
+    { name = "click", specifier = ">=8.2" },
     { name = "duckdb", specifier = ">=1.1" },
     { name = "geoalchemy2" },
     { name = "geoarrow-pyarrow" },
