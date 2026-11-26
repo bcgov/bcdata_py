@@ -124,6 +124,10 @@ class CatalogueMissingError(RuntimeError):
     """A changed download has no catalogue metadata, but the mirror file has"""
 
 
+class ConditionalWriteError(RuntimeError):
+    """The destination store doesn't support conditional writes"""
+
+
 class ConcurrentWriteError(RuntimeError):
     """A file changed between reading and rewriting it, eg by an overlapping run"""
 
@@ -317,9 +321,11 @@ class Destination:
 
         e_tag is the file's ETag when it was read, or None if it didn't exist (then
         the upload only succeeds if it still doesn't). Raises ConcurrentWriteError if
-        the file was written in the meantime, eg by an overlapping run. Stores that
-        don't support conditional writes (obstore's LocalStore) are written to
-        unconditionally.
+        the file was written in the meantime, eg by an overlapping run.
+
+        A local folder (obstore's LocalStore has no conditional writes) is written to
+        unconditionally. Any other store without them raises ConditionalWriteError:
+        overwriting would let overlapping runs drop each other's change log rows.
         """
         key = self.key(*parts)
         mode = {"e_tag": e_tag} if e_tag else "create"
@@ -330,8 +336,13 @@ class Destination:
             raise ConcurrentWriteError(
                 f"{self.url(*parts)} changed since it was read, eg by another run"
             ) from e
-        except NotImplementedError:
-            log.debug(f"{self.url(*parts)}: store has no conditional writes, overwriting")
+        except NotImplementedError as e:
+            if not isinstance(self.store, LocalStore):
+                raise ConditionalWriteError(
+                    f"{self.url(*parts)}: the store doesn't support conditional writes, "
+                    "so overlapping runs could drop each other's changes. Not written"
+                ) from e
+            log.debug(f"{self.url(*parts)}: local folder, overwriting")
             obstore.put(self.store, key, Path(local_path))
 
     def delete(self, *parts):
@@ -928,7 +939,7 @@ def replicate_table(dest, table, fields, now, download=None, table_metadata=None
             dest.upload(records_local, *records_parts)
         try:
             dest.replace(log_local, *change_log_parts(table), e_tag=log_e_tag)
-        except ConcurrentWriteError:
+        except (ConcurrentWriteError, ConditionalWriteError):
             if records_local:
                 dest.delete(*records_parts)
             raise
