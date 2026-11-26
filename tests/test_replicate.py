@@ -600,6 +600,8 @@ def test_destination_footer_only(dest):
     obstore.put(dest.store, "t.parquet", buf.getvalue())
     assert dest.read_bcdata_metadata("t.parquet") == {"x": 1}
     assert dest.read_bcdata_metadata("missing.parquet") is None
-    obstore.put(dest.store, "not.parquet", b"not a parquet file")
-    with pytest.raises(ValueError, match="not a parquet file"):
-        dest.read_bcdata_metadata("not.parquet")
+    # not parquet, shorter than the footer, and a footer longer than the file
+    for data in (b"not a parquet file", b"PAR1", b"PAR1" + (999).to_bytes(4, "little") + b"PAR1"):
+        obstore.put(dest.store, "not.parquet", data)
+        with pytest.raises(ValueError, match="not a parquet file"):
+            dest.read_bcdata_metadata("not.parquet")

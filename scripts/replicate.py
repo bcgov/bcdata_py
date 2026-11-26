@@ -292,10 +292,12 @@ class Destination:
             size = obstore.head(self.store, key)["size"]
         except FileNotFoundError:
             return None
-        tail = bytes(obstore.get_range(self.store, key, start=size - 8, end=size))
-        if size < 12 or tail[4:] != b"PAR1":
+        if size < 12:  # the magic bytes at both ends, and the footer length
             raise ValueError(f"{self.url(*parts)} is not a parquet file")
+        tail = bytes(obstore.get_range(self.store, key, start=size - 8, end=size))
         length = int.from_bytes(tail[:4], "little")
+        if tail[4:] != b"PAR1" or length > size - 12:
+            raise ValueError(f"{self.url(*parts)} is not a parquet file")
         footer = bytes(obstore.get_range(self.store, key, start=size - 8 - length, end=size - 8))
         return read_bcdata_metadata(io.BytesIO(b"PAR1" + footer + tail))
 
