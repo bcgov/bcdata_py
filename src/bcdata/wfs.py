@@ -1,3 +1,4 @@
+import copy
 import errno
 import functools
 import json
@@ -101,6 +102,12 @@ _sessions = threading.local()
 # tables described per DescribeFeatureType request, to keep request URLs short
 SCHEMAS_PER_REQUEST = 50
 
+# table schemas requested by this process, {table: schema}, shared by all BCWFS
+# instances. Schemas are not cached on disk, so one is never older than the process
+# using it, and a change to how schemas are parsed never meets a schema parsed by an
+# earlier version of bcdata.
+_schemas = {}
+
 
 def _session():
     """Return this thread's requests.Session for DataBC requests.
@@ -201,7 +208,7 @@ OWS_NS = "{http://www.opengis.net/ows/1.1}"
 # GML property types of geometry columns, and the geometry type each is reported as.
 # The names are those owslib gave (bcdata used it to parse schemas), kept
 # because they are user facing: `bcdata info` prints the schema, and the README shows
-# "geometry": "GeometryCollection". Cached schemas use them too.
+# "geometry": "GeometryCollection".
 GEOMETRY_TYPES = {
     "PointPropertyType": "Point",
     "PolygonPropertyType": "Polygon",
@@ -431,7 +438,7 @@ class BCWFS:
         """Write text to a cache file atomically (temp file in cache dir, then replace)"""
         fd, tmp = tempfile.mkstemp(dir=self.cache_path, prefix=f".{cache_file}.", suffix=".tmp")
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             os.replace(tmp, os.path.join(self.cache_path, cache_file))
         except BaseException:
@@ -575,15 +582,21 @@ class BCWFS:
     def get_capabilities(self):
         """
         Request server capabilities (layer definitions).
-        Cache response as file daily, caching to one of:
+        Cache the response as a utf-8 file for cache_refresh_days, caching to one of:
           - $BCDATA_CACHE environment variable
           - default (~/.bcdata)
         """
-        if self._cache_is_stale("capabilities.xml"):
-            self._write_cache_file("capabilities.xml", self._request_capabilities())
-        # load cached xml from file
-        with open(os.path.join(self.cache_path, "capabilities.xml"), "r") as f:
-            return f.read()
+        if not self._cache_is_stale("capabilities.xml"):
+            try:
+                with open(os.path.join(self.cache_path, "capabilities.xml"), encoding="utf-8") as f:
+                    return f.read()
+            except UnicodeDecodeError:
+                # written by an earlier bcdata in the platform's default encoding
+                # (eg cp1252 on Windows), request it again
+                log.info("Cached capabilities.xml is not utf-8, requesting it again")
+        capabilities = self._request_capabilities()
+        self._write_cache_file("capabilities.xml", capabilities)
+        return capabilities
 
     def get_count(self, dataset, query=None, bounds=None, bounds_crs="EPSG:3005", geom_column=None):
         """Ask DataBC WFS how many features there are in a table/query/bounds"""
@@ -603,18 +616,14 @@ class BCWFS:
         """Return {table: schema} for several tables, requesting them in batches.
 
         Describing up to SCHEMAS_PER_REQUEST tables per request means checking many
-        tables makes a few requests rather than one per table.
+        tables makes a few requests rather than one per table. Each table is requested
+        once per process (or again if refresh was asked for), see _schemas.
         """
-        stale = [t for t in tables if self._cache_is_stale(t)]
-        for i in range(0, len(stale), SCHEMAS_PER_REQUEST):
-            for table, schema in self._request_schemas(stale[i : i + SCHEMAS_PER_REQUEST]).items():
-                self._write_cache_file(table, json.dumps(schema, indent=4))
-        # load cached schemas
-        schemas = {}
-        for table in tables:
-            with open(os.path.join(self.cache_path, table), "r") as f:
-                schemas[table] = json.loads(f.read())
-        return schemas
+        missing = [t for t in dict.fromkeys(tables) if self.refresh or t not in _schemas]
+        for i in range(0, len(missing), SCHEMAS_PER_REQUEST):
+            _schemas.update(self._request_schemas(missing[i : i + SCHEMAS_PER_REQUEST]))
+        # copies, so a caller changing a schema does not change it for later callers
+        return {table: copy.deepcopy(_schemas[table]) for table in tables}
 
     def get_schema(self, table):
         return self._get_schemas([table])[table]

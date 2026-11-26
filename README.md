@@ -37,10 +37,10 @@ Linux/Mac: `export DATABASE_URL=postgresql://{username}:{password}@{hostname}:{p
 Windows:   `SET DATABASE_URL=postgresql://{username}:{password}@{hostname}:{port}/{database}`
 
 
-### Layer list / layer schema cache
+### Layer list cache
 
-To reduce the volume of requests, information about data requested is cached locally. 
-Schemas of individual layers that have previously been requested are cached with the cache file name matching the object/table name.
+To reduce the volume of requests, the list of layers available via WFS (the WFS GetCapabilities response) is cached locally.
+Layer schemas are not cached, they are requested once each time bcdata runs.
 Location of the cache defaults to `~/.bcdata` but can be modified by setting the `BCDATA_CACHE` environment variable:
 
 `export BCDATA_CACHE=/path/to/bcdata_cache`
